@@ -1,90 +1,78 @@
-# brayfxtrade_pro_final.py
+# brayfxtrade_pro_stable.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import time
-import streamlit.components.v1 as components
 
-# ---------------------------
-st.set_page_config(page_title="BrayFXTrade Analyzer — Pro Final", layout="wide")
-st.title("💹 BrayFXTrade Analyzer — Ultimate Pro")
+# ------------------------------
+st.set_page_config(page_title="BrayFXTrade Analyzer — Stable Pro", layout="wide")
+st.title("💹 BrayFXTrade Analyzer — Stable Pro")
 
-# ---------------------------
-# PAIR MAPPING: TradingView UI → Yahoo Finance
+# ------------------------------
+# Frontend: Clean TradingView-style symbols
 PAIR_MAP = {
     "EURUSD":"EURUSD=X", "GBPUSD":"GBPUSD=X", "USDJPY":"USDJPY=X",
     "USDCAD":"USDCAD=X", "USDCHF":"USDCHF=X", "AUDUSD":"AUDUSD=X",
     "NZDUSD":"NZDUSD=X", "GBPJPY":"GBPJPY=X", "XAUUSD":"XAUUSD=X",
-    "XAGUSD":"XAGUSD=X", "BTCUSD":"BTC-USD", "ETHUSD":"ETH-USD",
-    "US30":"^DJI", "NAS100":"^NDX", "SPX500":"^GSPC"
+    "XAGUSD":"XAGUSD=X", "BTCUSD":"BTC-USD", "ETHUSD":"ETH-USD"
 }
 
-CATEGORIES = {
-    "Forex": ["EURUSD","GBPUSD","USDJPY","USDCAD","USDCHF","AUDUSD","NZDUSD","GBPJPY"],
-    "Crypto": ["BTCUSD","ETHUSD"],
-    "Indices": ["US30","NAS100","SPX500"],
-    "Commodities": ["XAUUSD","XAGUSD"]
+CATEGORY_MAP = {
+    "Forex":["EURUSD","GBPUSD","USDJPY","USDCAD","USDCHF","AUDUSD","NZDUSD","GBPJPY"],
+    "Crypto":["BTCUSD","ETHUSD"],
+    "Commodities":["XAUUSD","XAGUSD"]
 }
 
-# ---------------------------
+# ------------------------------
 # Sidebar
 with st.sidebar:
     st.header("Settings")
     mode = st.selectbox("Mode", ["Backtest","Live Analysis"])
-    category = st.selectbox("Category", list(CATEGORIES.keys()))
-    if 'favorites' not in st.session_state: st.session_state['favorites'] = []
-    favs = st.session_state['favorites']
-    fav_display = [f"⭐ {f}" for f in favs]
-    choices = (fav_display + ["---"] if fav_display else []) + CATEGORIES[category]
-    selected_symbol = st.selectbox("Select Symbol", choices)
-    selected_symbol = selected_symbol.replace("⭐ ","") if selected_symbol.startswith("⭐") else selected_symbol
-    manual = st.text_input("Or type symbol manually", "")
-    if manual: selected_symbol = manual.strip().upper()
-    col1,col2 = st.columns(2)
-    with col1:
-        if st.button("⭐ Add Favorite") and selected_symbol not in st.session_state['favorites']:
-            st.session_state['favorites'].append(selected_symbol)
-    with col2:
-        if st.button("🗑 Remove Favorite") and selected_symbol in st.session_state['favorites']:
-            st.session_state['favorites'].remove(selected_symbol)
+    category = st.selectbox("Category", list(CATEGORY_MAP.keys()))
+    selected_symbol = st.selectbox("Select Symbol", CATEGORY_MAP[category])
     timeframe = st.selectbox("Timeframe", ["5m","15m","1H","4H","1D"])
-    start_date = st.date_input("Start Date", datetime.today()-timedelta(days=365))
+    start_date = st.date_input("Start Date", datetime.today()-timedelta(days=90))
     end_date = st.date_input("End Date", datetime.today())
     st.subheader("Strategies")
     use_ob = st.checkbox("Order Blocks (OB)", True)
     use_fvg = st.checkbox("Fair Value Gap (FVG)", True)
     use_patterns = st.checkbox("Engulfing Pattern", True)
     st.subheader("Extras")
-    auto_refresh = st.checkbox("Auto-refresh Live", False)
-    refresh_interval = st.number_input("Refresh Interval (s)", 5, 600, 60)
     show_ema = st.checkbox("Show EMA overlay", True)
     ema_period = st.number_input("EMA period", 5, 200, 34)
-    export_csv = st.checkbox("Enable CSV export", True)
-    st.markdown("---")
+    auto_refresh = st.checkbox("Auto-refresh Live", False)
+    refresh_interval = st.number_input("Refresh Interval (s)", 5, 600, 60)
 
 yf_symbol = PAIR_MAP.get(selected_symbol, selected_symbol)
 
-# ---------------------------
-# Fetch Data
+# ------------------------------
+# Timeframe mapping
 TF_MAP = {"5m":"5m","15m":"15m","1H":"60m","4H":"240m","1D":"1d"}
 
+# ------------------------------
+# Fetch data with error handling
 @st.cache_data(ttl=120)
 def fetch_data(symbol, start, end, interval):
-    df = yf.download(symbol, start=start, end=end+timedelta(days=1), interval=interval, progress=False)
-    df = df.dropna(subset=['Open','High','Low','Close'])
-    df.index = pd.to_datetime(df.index)
-    return df
+    try:
+        df = yf.download(symbol, start=start, end=end+timedelta(days=1), interval=interval, progress=False)
+        if df.empty:
+            return pd.DataFrame()
+        df = df.dropna(subset=['Open','High','Low','Close'])
+        df.index = pd.to_datetime(df.index)
+        return df
+    except Exception as e:
+        st.warning(f"Error fetching data for {symbol}: {e}")
+        return pd.DataFrame()
 
 df = fetch_data(yf_symbol, start_date, end_date, TF_MAP.get(timeframe,"60m"))
 if df.empty:
-    st.error(f"No data for {selected_symbol}. Try shorter range or different symbol.")
+    st.error(f"No data for {selected_symbol} in this timeframe/date range. Try shorter range or different symbol.")
     st.stop()
 st.session_state['market_df'] = df
 
-# ---------------------------
+# ------------------------------
 # Analysis functions
 def detect_ob(data):
     out=[]
@@ -143,68 +131,83 @@ def simulate_trades(signals,data,lookahead=20):
         df_trades['CumulativeProfit']=df_trades['Profit'].cumsum()
     return df_trades
 
-# ---------------------------
-# Run Analysis button
-run_now=st.button("▶️ Run Analysis")
-
+# ------------------------------
+# Run Analysis Button
+run_now = st.button("▶️ Run Analysis")
 if run_now:
-    base_df=st.session_state['market_df']
-    signals=pd.DataFrame()
-    if use_ob:
-        s=detect_ob(base_df); signals=pd.concat([signals,s])
-    if use_fvg:
-        s=detect_fvg(base_df); signals=pd.concat([signals,s])
-    if use_patterns:
-        s=detect_patterns(base_df); signals=pd.concat([signals,s])
-    if not signals.empty: signals=signals.sort_values("Index").reset_index(drop=True)
-    trades=simulate_trades(signals,base_df) if not signals.empty else pd.DataFrame()
-    st.session_state['signals_df']=signals
-    st.session_state['trades_df']=trades
-    st.session_state['last_run']=datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    base_df = st.session_state['market_df']
+    signals = pd.DataFrame()
+    if use_ob: signals = pd.concat([signals, detect_ob(base_df)])
+    if use_fvg: signals = pd.concat([signals, detect_fvg(base_df)])
+    if use_patterns: signals = pd.concat([signals, detect_patterns(base_df)])
+    if not signals.empty: signals = signals.sort_values("Index").reset_index(drop=True)
+    trades = simulate_trades(signals, base_df) if not signals.empty else pd.DataFrame()
+    st.session_state['signals_df'] = signals
+    st.session_state['trades_df'] = trades
+    st.session_state['last_run'] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     st.success("✅ Analysis Complete")
 
-# retrieve results
-signals_df=st.session_state.get('signals_df',pd.DataFrame())
-trades_df=st.session_state.get('trades_df',pd.DataFrame())
+# ------------------------------
+# Retrieve results
+signals_df = st.session_state.get('signals_df', pd.DataFrame())
+trades_df = st.session_state.get('trades_df', pd.DataFrame())
 
-# ---------------------------
+# ------------------------------
 # Layout
-left,right=st.columns([1,2])
+left, right = st.columns([1,2])
 with left:
     st.subheader("Signals")
     if signals_df.empty: st.info("No signals yet. Click ▶️ Run Analysis")
     else:
-        disp=signals_df.copy();disp['Time']=disp['Index'].apply(lambda i: df.index[int(i)].strftime("%Y-%m-%d %H:%M"))
-        st.dataframe(disp[['Time','Type','Strategy','Price']].sort_values('Time',ascending=False))
+        disp = signals_df.copy()
+        disp['Time'] = disp['Index'].apply(lambda i: df.index[int(i)].strftime("%Y-%m-%d %H:%M"))
+        st.dataframe(disp[['Time','Type','Strategy','Price']].sort_values('Time', ascending=False))
+
     st.subheader("Performance")
     if not trades_df.empty:
-        summ=trades_df.groupby('Strategy').agg(Total_Trades=('Win','count'),Total_Profit=('Profit','sum'),Win_Rate=('Win','mean')).reset_index()
-        summ['Win_Rate']=(summ['Win_Rate']*100).round(2)
-        summ['Total_Profit']=summ['Total_Profit'].round(6)
+        summ = trades_df.groupby('Strategy').agg(
+            Total_Trades=('Win','count'),
+            Total_Profit=('Profit','sum'),
+            Win_Rate=('Win','mean')
+        ).reset_index()
+        summ['Win_Rate'] = (summ['Win_Rate']*100).round(2)
+        summ['Total_Profit'] = summ['Total_Profit'].round(6)
         st.table(summ)
+
     st.subheader("Alerts")
     if not signals_df.empty:
-        latest=signals_df.tail(5).iloc[::-1]
+        latest = signals_df.tail(5).iloc[::-1]
         for _,s in latest.iterrows():
-            txt=f"{s['Type']} ({s.get('Strategy','')}) @ {s['Price']:.6f} - Time: {df.index[int(s['Index'])].strftime('%Y-%m-%d %H:%M')}"
+            txt = f"{s['Type']} ({s.get('Strategy','')}) @ {s['Price']:.6f} - {df.index[int(s['Index'])].strftime('%Y-%m-%d %H:%M')}"
             st.success(txt) if "Bull" in s['Type'] else st.warning(txt) if "Bear" in s['Type'] else st.info(txt)
 
 with right:
     st.subheader("Candlestick Chart + Signals")
-    fig=go.Figure()
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-                                 increasing_line_color='green',decreasing_line_color='red',name='Price'))
-    if show_ema: fig.add_trace(go.Scatter(x=df.index,y=df['Close'].ewm(span=ema_period).mean(),name=f"EMA{ema_period}",line=dict(dash='dash')))
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        increasing_line_color='green', decreasing_line_color='red', name='Price'
+    ))
+    if show_ema: fig.add_trace(go.Scatter(
+        x=df.index, y=df['Close'].ewm(span=ema_period).mean(), name=f"EMA{ema_period}", line=dict(dash='dash')
+    ))
     if not signals_df.empty:
         for _,s in signals_df.iterrows():
-            idx=int(s['Index']);price=s['Price'];typ=s['Type']
-            fig.add_trace(go.Scatter(x=[df.index[idx]],y=[price],mode='markers+text',marker=dict(color='green' if 'Bull' in typ else 'red',size=10),text=[typ],textposition="top center",name=typ))
+            idx = int(s['Index']); price = s['Price']; typ = s['Type']
+            fig.add_trace(go.Scatter(
+                x=[df.index[idx]], y=[price], mode='markers+text',
+                marker=dict(color='green' if 'Bull' in typ else 'red', size=10),
+                text=[typ], textposition="top center", name=typ
+            ))
     if not trades_df.empty:
-        fig.add_trace(go.Scatter(x=[df.index[min(int(r['Idx']),len(df)-1)] for _,r in trades_df.iterrows()],
-                                 y=trades_df['CumulativeProfit'],mode='lines+markers',name='Equity',yaxis='y2'))
-        fig.update_layout(yaxis2=dict(overlaying='y',side='right',title='Cumulative Profit',showgrid=False))
-    fig.update_layout(height=720,margin=dict(l=10,r=10,t=30,b=10))
-    st.plotly_chart(fig,use_container_width=True)
+        fig.add_trace(go.Scatter(
+            x=[df.index[min(int(r['Idx']), len(df)-1)] for _,r in trades_df.iterrows()],
+            y=trades_df['CumulativeProfit'], mode='lines+markers', name='Equity',
+            yaxis='y2'
+        ))
+        fig.update_layout(yaxis2=dict(overlaying='y', side='right', title='Cumulative Profit', showgrid=False))
+    fig.update_layout(height=720, margin=dict(l=10,r=10,t=30,b=10))
+    st.plotly_chart(fig, use_container_width=True)
 
-# ---------------------------
-st.caption("BrayFXTrade Analyzer — Ultimate Pro. Demo heuristics only; not financial advice.")
+st.caption("BrayFXTrade Analyzer — Stable Pro. Demo heuristics only; not financial advice.")
+``

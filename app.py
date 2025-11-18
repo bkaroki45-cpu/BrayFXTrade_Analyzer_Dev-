@@ -27,20 +27,26 @@ def detect_order_blocks(df, lookback=20):
     for i in range(lookback, len(df)):
         recent = df.iloc[i-lookback:i]
         recent_close = recent['Close'].dropna()
+
         if recent_close.empty:
-            continue
-        # Bullish OB
-        if df['Close'].iloc[i] > recent_close.max():
+            continue  # skip if no data
+
+        recent_max = recent_close.max()
+        recent_min = recent_close.min()
+        current_close = df['Close'].iloc[i]
+
+        # Ensure comparisons are scalar
+        if not np.isnan(current_close) and not np.isnan(recent_max) and current_close > recent_max:
             df.loc[df.index[i], 'OB_type'] = 'bullish'
             df.loc[df.index[i], 'OB_top'] = df['High'].iloc[i]
             df.loc[df.index[i], 'OB_bottom'] = df['Low'].iloc[i]
-        # Bearish OB
-        elif df['Close'].iloc[i] < recent_close.min():
+        elif not np.isnan(current_close) and not np.isnan(recent_min) and current_close < recent_min:
             df.loc[df.index[i], 'OB_type'] = 'bearish'
             df.loc[df.index[i], 'OB_top'] = df['High'].iloc[i]
             df.loc[df.index[i], 'OB_bottom'] = df['Low'].iloc[i]
 
     return df
+
 
 def detect_fvg(df):
     df = df.copy()
@@ -48,15 +54,17 @@ def detect_fvg(df):
     df['FVG_bottom'] = np.nan
 
     for i in range(2, len(df)):
-        # Only proceed if OB exists
         if pd.notna(df['OB_type'].iloc[i-2]):
-            if df['OB_type'].iloc[i-2] == 'bullish' and df['Low'].iloc[i] > df['High'].iloc[i-2]:
-                df.loc[df.index[i], 'FVG_top'] = df['High'].iloc[i-2]
-                df.loc[df.index[i], 'FVG_bottom'] = df['Low'].iloc[i]
-            elif df['OB_type'].iloc[i-2] == 'bearish' and df['High'].iloc[i] < df['Low'].iloc[i-2]:
-                df.loc[df.index[i], 'FVG_top'] = df['High'].iloc[i]
-                df.loc[df.index[i], 'FVG_bottom'] = df['Low'].iloc[i-2]
+            if df['OB_type'].iloc[i-2] == 'bullish':
+                if pd.notna(df['Low'].iloc[i]) and pd.notna(df['High'].iloc[i-2]) and df['Low'].iloc[i] > df['High'].iloc[i-2]:
+                    df.loc[df.index[i], 'FVG_top'] = df['High'].iloc[i-2]
+                    df.loc[df.index[i], 'FVG_bottom'] = df['Low'].iloc[i]
+            elif df['OB_type'].iloc[i-2] == 'bearish':
+                if pd.notna(df['High'].iloc[i]) and pd.notna(df['Low'].iloc[i-2]) and df['High'].iloc[i] < df['Low'].iloc[i-2]:
+                    df.loc[df.index[i], 'FVG_top'] = df['High'].iloc[i]
+                    df.loc[df.index[i], 'FVG_bottom'] = df['Low'].iloc[i-2]
     return df
+
 
 # ---------------------- Pattern Detection ----------------------
 def detect_patterns(df):

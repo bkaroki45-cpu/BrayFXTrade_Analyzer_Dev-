@@ -257,28 +257,45 @@ by looking forward N bars to see if TP or SL was hit first.
 
 if run_button:
     with st.spinner("Fetching data..."):
-        df = fetch_data(pair, start_date.strftime('%Y-%m-%d'), (end_date + timedelta(days=1)).strftime('%Y-%m-%d'), interval=interval)
+        df = fetch_data(
+            pair,
+            start_date.strftime('%Y-%m-%d'),
+            (end_date + timedelta(days=1)).strftime('%Y-%m-%d'),
+            interval=interval
+        )
+
+    # Check if DataFrame has data and required columns
+    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
     if df.empty:
         st.error("No data found for the selected pair/interval/date range. Try different options.")
+    elif not all(col in df.columns for col in required_cols):
+        st.error(f"Data is missing required columns. Found columns: {list(df.columns)}")
     else:
-        # Run detection
+        # Run detection safely
         df_ob = detect_order_blocks(df, lookback=20)
         df_fvg = detect_fvg(df_ob)
         df_pat = detect_patterns(df_fvg)
-        df_sig = generate_signals(df_pat, strategy=strategy)
+        
+        # Generate signals (make sure you have a safe generate_signals function)
+        try:
+            df_sig = generate_signals(df_pat, strategy=strategy)
+        except Exception as e:
+            st.error(f"Error generating signals: {e}")
+            df_sig = df_pat.copy()
 
+        # Backtest if selected
         if mode == 'Backtest':
             df_bt = backtest_signals(df_sig, look_forward=look_forward)
         else:
             df_bt = df_sig.copy()
 
-        # Performance summary
-        total_signals = df_bt['signal'].notna().sum()
-        wins = (df_bt['outcome'] == 'win').sum()
-        losses = (df_bt['outcome'] == 'loss').sum()
-        no_hits = (df_bt['outcome'] == 'no_hit').sum()
-        win_rate = (wins / (wins + losses)) * 100 if (wins + losses) > 0 else np.nan
-        avg_profit = df_bt['profit'].dropna().mean()
+        # Performance summary (safe)
+        total_signals = df_bt['signal'].notna().sum() if 'signal' in df_bt.columns else 0
+        wins = (df_bt['outcome'] == 'win').sum() if 'outcome' in df_bt.columns else 0
+        losses = (df_bt['outcome'] == 'loss').sum() if 'outcome' in df_bt.columns else 0
+        no_hits = (df_bt['outcome'] == 'no_hit').sum() if 'outcome' in df_bt.columns else 0
+        win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else np.nan
+        avg_profit = df_bt['profit'].dropna().mean() if 'profit' in df_bt.columns else np.nan
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Signals", int(total_signals))
@@ -288,65 +305,178 @@ if run_button:
 
         st.subheader("Signals Table")
         display_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'OB_type', 'FVG', 'pattern', 'signal', 'entry', 'sl', 'tp', 'outcome', 'profit']
-        st.dataframe(df_bt.reset_index()[['index'] + [c for c in display_cols if c in df_bt.columns]].rename(columns={'index':'Datetime'}).sort_values('Datetime', ascending=False))
+        safe_cols = [c for c in display_cols if c in df_bt.columns]
+        st.dataframe(df_bt.reset_index()[['index'] + safe_cols].rename(columns={'index':'Datetime'}).sort_values('Datetime', ascending=False))
 
-        # Chart: Candlestick with OB / FVG / pattern markers
-        st.subheader("Chart & Signals")
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.02)
+        st.success("Analysis complete. Review signals and charts above.")
 
-        fig.add_trace(go.Candlestick(x=df_bt.index, open=df_bt['Open'], high=df_bt['High'], low=df_bt['Low'], close=df_bt['Close'], name='Price'), row=1, col=1)
+        # ---------------------- Safe Charting ----------------------
+st.subheader("Chart & Signals")
 
-        # plot OB levels
-        ob_bull = df_bt[df_bt['OB_type'] == 'bull']
-        ob_bear = df_bt[df_bt['OB_type'] == 'bear']
+if df_bt.empty or 'Open' not in df_bt.columns or 'Close' not in df_bt.columns:
+    st.warning("Not enough data to plot chart.")
+else:
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.02
+    )
+
+    # Candlestick
+    fig.add_trace(
+        go.Candlestick(
+            x=df_bt.index,
+            open=df_bt['Open'],
+            high=df_bt['High'],
+            low=df_bt['Low'],
+            close=df_bt['Close'],
+            name='Price'
+        ),
+        row=1, col=1
+    )
+
+    # Plot OB levels safely
+    if 'OB_type' in df_bt.columns and 'OB_level' in df_bt.columns:
+        ob_bull = df_bt[df_bt.get('OB_type') == 'bull']
+        ob_bear = df_bt[df_bt.get('OB_type') == 'bear']
         if not ob_bull.empty:
-            fig.add_trace(go.Scatter(x=ob_bull.index, y=ob_bull['OB_level'], mode='markers+text', name='OB Bull', text=['OB Bull']*len(ob_bull), textposition='top center', marker=dict(symbol='triangle-up', size=10)), row=1, col=1)
+            fig.add_trace(
+                go.Scatter(
+                    x=ob_bull.index,
+                    y=ob_bull['OB_level'],
+                    mode='markers+text',
+                    name='OB Bull',
+                    text=['OB Bull']*len(ob_bull),
+                    textposition='top center',
+                    marker=dict(symbol='triangle-up', size=10)
+                ),
+                row=1, col=1
+            )
         if not ob_bear.empty:
-            fig.add_trace(go.Scatter(x=ob_bear.index, y=ob_bear['OB_level'], mode='markers+text', name='OB Bear', text=['OB Bear']*len(ob_bear), textposition='bottom center', marker=dict(symbol='triangle-down', size=10)), row=1, col=1)
+            fig.add_trace(
+                go.Scatter(
+                    x=ob_bear.index,
+                    y=ob_bear['OB_level'],
+                    mode='markers+text',
+                    name='OB Bear',
+                    text=['OB Bear']*len(ob_bear),
+                    textposition='bottom center',
+                    marker=dict(symbol='triangle-down', size=10)
+                ),
+                row=1, col=1
+            )
 
-        # plot FVG rectangles
+    # Plot FVG rectangles safely
+    if 'FVG' in df_bt.columns and 'FVG_top' in df_bt.columns and 'FVG_bottom' in df_bt.columns:
         fvg_df = df_bt.dropna(subset=['FVG'])
         for idx, r in fvg_df.iterrows():
-            top = r['FVG_top']
-            bottom = r['FVG_bottom']
+            top = r.get('FVG_top')
+            bottom = r.get('FVG_bottom')
             if pd.notna(top) and pd.notna(bottom):
-                fig.add_shape(type='rect', x0=idx - pd.Timedelta(interval), x1=idx, y0=bottom, y1=top, line=dict(width=0), fillcolor='LightSalmon' if r['FVG']=='bear' else 'LightGreen', opacity=0.15, row=1, col=1)
+                fig.add_shape(
+                    type='rect',
+                    x0=idx - pd.Timedelta(interval),
+                    x1=idx,
+                    y0=bottom,
+                    y1=top,
+                    line=dict(width=0),
+                    fillcolor='LightSalmon' if r['FVG']=='bear' else 'LightGreen',
+                    opacity=0.15,
+                    row=1, col=1
+                )
 
-        # plot signals
+    # Plot signals safely
+    if 'signal' in df_bt.columns and 'entry' in df_bt.columns:
         sigs = df_bt.dropna(subset=['signal'])
-        longs = sigs[sigs['signal']=='long']
-        shorts = sigs[sigs['signal']=='short']
-        if not longs.empty:
-            fig.add_trace(go.Scatter(x=longs.index, y=longs['entry'], mode='markers', name='Long Entry', marker=dict(symbol='circle', size=9)), row=1, col=1)
-        if not shorts.empty:
-            fig.add_trace(go.Scatter(x=shorts.index, y=shorts['entry'], mode='markers', name='Short Entry', marker=dict(symbol='x', size=9)), row=1, col=1)
+        if not sigs.empty:
+            longs = sigs[sigs['signal']=='long']
+            shorts = sigs[sigs['signal']=='short']
+            if not longs.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=longs.index,
+                        y=longs['entry'],
+                        mode='markers',
+                        name='Long Entry',
+                        marker=dict(symbol='circle', size=9)
+                    ),
+                    row=1, col=1
+                )
+            if not shorts.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=shorts.index,
+                        y=shorts['entry'],
+                        mode='markers',
+                        name='Short Entry',
+                        marker=dict(symbol='x', size=9)
+                    ),
+                    row=1, col=1
+                )
 
-        # volume
-        fig.add_trace(go.Bar(x=df_bt.index, y=df_bt['Volume'], name='Volume'), row=2, col=1)
+    # Volume bar
+    if 'Volume' in df_bt.columns:
+        fig.add_trace(
+            go.Bar(x=df_bt.index, y=df_bt['Volume'], name='Volume'),
+            row=2, col=1
+        )
 
-        fig.update_layout(height=700, showlegend=True, xaxis_rangeslider_visible=False, title_text=f"{pair} — {strategy} — {interval}")
-        st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(
+        height=700,
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        title_text=f"{pair} — {strategy} — {interval}"
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
 
         # Performance comparison graphs
-        st.subheader("Performance & Distribution")
-        perf_col1, perf_col2 = st.columns(2)
+        # ---------------------- Safe Performance Charts ----------------------
+st.subheader("Performance & Distribution")
+perf_col1, perf_col2 = st.columns(2)
 
-        # equity curve (cumulative profit of signals over time)
-        signals_only = df_bt.dropna(subset=['signal']).copy()
-        signals_only['cum_profit'] = signals_only['profit'].cumsum()
-        if not signals_only.empty:
-            perf_fig = go.Figure()
-            perf_fig.add_trace(go.Scatter(x=signals_only.index, y=signals_only['cum_profit'], mode='lines+markers', name='Equity Curve'))
-            perf_fig.update_layout(title='Equity Curve (by signals)', xaxis_title='Datetime', yaxis_title='Cumulative Profit')
-            perf_col1.plotly_chart(perf_fig, use_container_width=True)
+# Only use signals with valid profit
+if 'signal' in df_bt.columns and 'profit' in df_bt.columns:
+    signals_only = df_bt.dropna(subset=['signal', 'profit']).copy()
+    signals_only['cum_profit'] = signals_only['profit'].cumsum()
 
-            # profit distribution
-            hist_fig = go.Figure()
-            hist_fig.add_trace(go.Histogram(x=signals_only['profit'], nbinsx=30))
-            hist_fig.update_layout(title='Profit Distribution (per signal)', xaxis_title='Profit', yaxis_title='Count')
-            perf_col2.plotly_chart(hist_fig, use_container_width=True)
-        else:
-            perf_col1.info('No signals to display performance charts.')
+    if not signals_only.empty:
+        # Equity Curve
+        perf_fig = go.Figure()
+        perf_fig.add_trace(
+            go.Scatter(
+                x=signals_only.index,
+                y=signals_only['cum_profit'],
+                mode='lines+markers',
+                name='Equity Curve'
+            )
+        )
+        perf_fig.update_layout(
+            title='Equity Curve (by signals)',
+            xaxis_title='Datetime',
+            yaxis_title='Cumulative Profit'
+        )
+        perf_col1.plotly_chart(perf_fig, use_container_width=True)
+
+        # Profit Distribution
+        hist_fig = go.Figure()
+        hist_fig.add_trace(
+            go.Histogram(
+                x=signals_only['profit'],
+                nbinsx=30
+            )
+        )
+        hist_fig.update_layout(
+            title='Profit Distribution (per signal)',
+            xaxis_title='Profit',
+            yaxis_title='Count'
+        )
+        perf_col2.plotly_chart(hist_fig, use_container_width=True)
+    else:
+        perf_col1.info('No signals with profit data to display performance charts.')
+        perf_col2.info('No signals with profit data to display histogram.')
+else:
+    perf_col1.info('No signals or profit data available for performance charts.')
+    perf_col2.info('No signals or profit data available for histogram.')
 
         # Summary and notes
         st.subheader("Summary & Guidance")

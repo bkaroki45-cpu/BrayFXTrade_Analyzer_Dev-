@@ -1,17 +1,29 @@
-# Signals.py
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="Signals & Trades", layout="wide")
-st.title("💹 Signals & Performance")
+st.title("📊 Signals & Performance")
 
-signals_df = st.session_state.get('signals_df', pd.DataFrame())
-df = st.session_state.get('market_df', pd.DataFrame())
+signals_df = st.session_state.get("signals_df", pd.DataFrame())
+trades_df = st.session_state.get("trades_df", pd.DataFrame())
 
 if signals_df.empty:
-    st.info("No signals detected yet. Click **Run Analysis** in Home page.")
+    st.info("No signals detected yet. Run Analysis from Home page.")
 else:
-    display = signals_df.copy()
-    display['Time'] = display['Index'].apply(lambda i: df.index[int(i)].strftime("%Y-%m-%d %H:%M"))
-    display = display[['Time','Type','Strategy','Price']]
-    st.dataframe(display.sort_values(by='Time', ascending=False).reset_index(drop=True), height=400)
+    st.subheader("Signals")
+    st.dataframe(signals_df)
+
+if not trades_df.empty:
+    st.subheader("Trades Summary")
+    summary = trades_df.groupby("StrategyName").agg(
+        Total_Trades=("Win","count"),
+        Total_Profit=("Profit","sum"),
+        Win_Rate=("Win","mean")
+    ).reset_index()
+    summary['Win_Rate'] = (summary['Win_Rate']*100).round(2)
+    st.table(summary)
+
+    st.subheader("Equity Curve")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=trades_df.index, y=trades_df['CumulativeProfit'], mode="lines+markers", name="Equity"))
+    st.plotly_chart(fig, use_container_width=True)

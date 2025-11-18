@@ -30,31 +30,44 @@ def fetch_data(ticker: str, start: str, end: str, interval: str = '1h') -> pd.Da
     return data
 
 def detect_order_blocks(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
-    """Detect bullish/bearish order blocks safely."""
     df = df.copy()
-    # Ensure columns exist
-    for col in ['Open', 'Close', 'High', 'Low']:
-        if col not in df.columns:
-            df[col] = np.nan
-    df = df.dropna(subset=['Open', 'Close', 'High', 'Low'])
     
+    # Ensure required columns exist
+    required_cols = ['Open', 'High', 'Low', 'Close']
+    for col in required_cols:
+        if col not in df.columns:
+            st.warning(f"Column '{col}' is missing from data. Skipping order block detection.")
+            df['OB_type'] = None
+            df['OB_level'] = np.nan
+            return df
+
+    df = df.dropna(subset=required_cols)
     df['OB_type'] = None
     df['OB_level'] = np.nan
 
     for i in range(1, len(df)-1):
         cur = df.iloc[i]
         nxt = df.iloc[i+1]
+
         body_cur = abs(cur['Close'] - cur['Open'])
         body_nxt = abs(nxt['Close'] - nxt['Open'])
 
         # bullish OB
-        if cur['Close'] < cur['Open'] and nxt['Close'] > nxt['Open'] and body_nxt > body_cur * 0.8 and nxt['Close'] > cur['Open']:
+        if float(cur['Close']) < float(cur['Open']) and \
+           float(nxt['Close']) > float(nxt['Open']) and \
+           body_nxt > body_cur * 0.8 and \
+           float(nxt['Close']) > float(cur['Open']):
             df.at[df.index[i], 'OB_type'] = 'bull'
-            df.at[df.index[i], 'OB_level'] = cur['Low']
+            df.at[df.index[i], 'OB_level'] = float(cur['Low'])
+
         # bearish OB
-        elif cur['Close'] > cur['Open'] and nxt['Close'] < nxt['Open'] and body_nxt > body_cur * 0.8 and nxt['Close'] < cur['Open']:
+        elif float(cur['Close']) > float(cur['Open']) and \
+             float(nxt['Close']) < float(nxt['Open']) and \
+             body_nxt > body_cur * 0.8 and \
+             float(nxt['Close']) < float(cur['Open']):
             df.at[df.index[i], 'OB_type'] = 'bear'
-            df.at[df.index[i], 'OB_level'] = cur['High']
+            df.at[df.index[i], 'OB_level'] = float(cur['High'])
+
     return df
 
 def detect_fvg(df: pd.DataFrame) -> pd.DataFrame:

@@ -1,4 +1,4 @@
-## BrayFXTrade Analyzer - Streamlit App (Full Analysis Version)
+# BrayFXTrade Analyzer - Streamlit App (Safe Version with Placeholder Signals)
 
 import streamlit as st
 import yfinance as yf
@@ -25,12 +25,28 @@ def fetch_data(ticker: str, start: str, end: str, interval: str = '1d') -> pd.Da
     data = data.sort_index()
     return data
 
-# Placeholder analysis functions (use the same as previous app)
-def detect_order_blocks(df, lookback=20): return df.copy()  # Add full function
+# Placeholder analysis functions (with dummy signal/outcome columns)
+
+def detect_order_blocks(df, lookback=20): return df.copy()
 def detect_fvg(df): return df.copy()
 def detect_patterns(df): return df.copy()
-def generate_signals(df, strategy='OB+FVG'): return df.copy()
-def backtest_signals(df, look_forward=24): return df.copy()
+
+def generate_signals(df, strategy='OB+FVG'):
+    df = df.copy()
+    if 'signal' not in df.columns:
+        df['signal'] = np.nan
+    # Example dummy signals for demo
+    df.loc[df.index[::5], 'signal'] = 'buy'
+    return df
+
+def backtest_signals(df, look_forward=24):
+    df = df.copy()
+    if 'outcome' not in df.columns:
+        df['outcome'] = np.nan
+    # Example dummy backtest outcomes
+    df.loc[df.index[::10], 'outcome'] = 'win'
+    df.loc[df.index[1::10], 'outcome'] = 'loss'
+    return df
 
 # ---------------------- Streamlit UI ----------------------
 
@@ -73,10 +89,16 @@ if run_button:
         else:
             df_bt = df_sig.copy()
 
+        # ---------------------- Defensive Checks ----------------------
+        if 'signal' not in df_bt.columns:
+            df_bt['signal'] = np.nan
+        if 'outcome' not in df_bt.columns:
+            df_bt['outcome'] = np.nan
+
         # ---------------------- Performance Summary ----------------------
         total_signals = df_bt['signal'].notna().sum()
-        wins = (df_bt.get('outcome') == 'win').sum() if 'outcome' in df_bt.columns else 0
-        losses = (df_bt.get('outcome') == 'loss').sum() if 'outcome' in df_bt.columns else 0
+        wins = (df_bt['outcome'] == 'win').sum()
+        losses = (df_bt['outcome'] == 'loss').sum()
         win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else np.nan
 
         col1, col2, col3, col4 = st.columns(4)
@@ -104,6 +126,4 @@ else:
 
 st.markdown("---")
 st.markdown("Built by BrayFXTrade Analyzer — demo heuristics for OB/FVG and simple pattern detection.")
-
-
 # End of file

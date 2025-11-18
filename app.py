@@ -1,106 +1,223 @@
+# brayfxtrade_pro_v2.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import streamlit.components.v1 as components
 from datetime import datetime, timedelta
+import streamlit.components.v1 as components
 
+# ---------------------------
+# App config
 st.set_page_config(page_title="BrayFXTrade Analyzer - Pro", layout="wide")
 st.title("💹 BrayFXTrade Analyzer — Pro (TradingView-style)")
 
-# -------- Sidebar --------
+# ---------------------------
+# Frontend pairs
+FRONTEND_PAIRS = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","USDCHF","NZDUSD","GBPJPY","BTC","ETH"]
+BACKEND_MAP = { "EURUSD":"EURUSD=X","GBPUSD":"GBPUSD=X","USDJPY":"USDJPY=X",
+                "AUDUSD":"AUDUSD=X","USDCAD":"USDCAD=X","USDCHF":"USDCHF=X",
+                "NZDUSD":"NZDUSD=X","GBPJPY":"GBPJPY=X","BTC":"BTC-USD","ETH":"ETH-USD"}
+
+TF_INTERVALS = {"1H":"60m","4H":"60m","1D":"1d","15m":"15m","5m":"5m"}
+
+# ---------------------------
+# Sidebar controls
 with st.sidebar:
-    st.header("Settings")
-    mode = st.selectbox("Mode", ["Backtest", "Live Analysis"])
-    
-    # Frontend clean pairs
-    FRONT_PAIRS = ["EURUSD","GBPUSD","USDJPY","AUDUSD","USDCAD","USDCHF","NZDUSD","GBPJPY","BTC","ETH"]
-    selected_front_pair = st.selectbox("Select Forex Pair", FRONT_PAIRS, index=0)
-    
-    # Backend mapping
-    PAIR_MAP = {
-        "EURUSD":"EURUSD=X","GBPUSD":"GBPUSD=X","USDJPY":"USDJPY=X",
-        "AUDUSD":"AUDUSD=X","USDCAD":"USDCAD=X","USDCHF":"USDCHF=X",
-        "NZDUSD":"NZDUSD=X","GBPJPY":"GBPJPY=X","BTC":"BTC-USD","ETH":"ETH-USD"
-    }
-    backend_pair = PAIR_MAP[selected_front_pair]
-    
+    st.header("BrayFXTrade Analyzer Settings")
+    mode = st.selectbox("Mode", ["Backtest","Live Analysis"])
+    frontend_pair = st.selectbox("Select Forex Pair", FRONTEND_PAIRS, index=0)
     timeframe = st.selectbox("Timeframe", ["1H","4H","1D","15m","5m"], index=0)
     today = datetime.today()
-    start_date = st.date_input("Start Date", today - timedelta(days=365))
+    start_date = st.date_input("Start Date", today - timedelta(days=90))
     end_date = st.date_input("End Date", today)
-    
     st.markdown("---")
     st.subheader("Strategies")
-    use_ob = st.checkbox("OB", value=True)
-    use_fvg = st.checkbox("FVG", value=True)
-    use_patterns = st.checkbox("Patterns", value=True)
-    
+    use_ob = st.checkbox("Order Blocks (OB)", True)
+    use_fvg = st.checkbox("Fair Value Gaps (FVG)", True)
+    use_patterns = st.checkbox("Chart Patterns (Engulfing)", True)
     st.markdown("---")
-    run_analysis_btn = st.button("▶️ Run Analysis")
-    
-# -------- Fetch Data --------
-@st.cache_data
-def get_data(pair, start, end, interval="60m"):
-    df = yf.download(pair, start=start, end=end+timedelta(days=1), interval=interval, progress=False)
-    if df.empty: return df
-    return df.dropna(subset=['Open','High','Low','Close'])
+    st.subheader("Run / Live Options")
+    auto_refresh = st.checkbox("Auto-refresh (Live only)", value=False)
+    refresh_interval = st.number_input("Refresh interval (s)", min_value=10, value=60)
+    st.markdown("---")
+    export_csv = st.checkbox("Show Export Buttons", True)
+    st.markdown("Built by BrayFXTrade Analyzer — demo heuristics for OB/FVG and chart patterns.")
 
-INTERVAL_MAP = {"1H":"60m","4H":"60m","1D":"1d","15m":"15m","5m":"5m"}
-raw_df = get_data(backend_pair, start_date, end_date, INTERVAL_MAP.get(timeframe,"60m"))
+backend_pair = BACKEND_MAP[frontend_pair]
+yf_interval = TF_INTERVALS.get(timeframe,"60m")
+
+# ---------------------------
+# Fetch data with safety
+@st.cache_data(ttl=60)
+def get_data(pair, start, end, interval):
+    try:
+        # Intraday limit
+        if interval in ["5m","15m","60m"]:
+            max_days = 60
+            if (end - start).days > max_days:
+                start = end - timedelta(days=max_days)
+                st.warning(f"Intraday data limited to last {max_days} days.")
+        df = yf.download(pair, start=start, end=end+timedelta(days=1), interval=interval, progress=False)
+        if df.empty:
+            return pd.DataFrame()
+        if not all(c in df.columns for c in ['Open','High','Low','Close']):
+            return pd.DataFrame()
+        df = df.dropna(subset=['Open','High','Low','Close'])
+        df.index = df.index.tz_localize(None)
+        return df
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return pd.DataFrame()
+
+raw_df = get_data(backend_pair, start_date, end_date, yf_interval)
+
 if raw_df.empty:
-    st.error(f"No data for {selected_front_pair} ({timeframe})")
+    st.error(f"No data for {frontend_pair} in {timeframe}. Try shorter range.")
     st.stop()
 
-# Optional: resample 4H
+# Resample for 4H
 if timeframe=="4H":
-    df = raw_df.resample('4H').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'})
+    df = raw_df.resample('4H').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
 else:
     df = raw_df.copy()
+
 st.session_state['market_df'] = df
 
-# -------- Analysis Functions --------
-# (OB/FVG/Pattern detection functions go here)
-# ... same as previous, unchanged ...
+# ---------------------------
+# Analysis functions
+def detect_ob(data):
+    rows=[]
+    for i in range(1,len(data)-1):
+        prev, cur, nxt = data.iloc[i-1], data.iloc[i], data.iloc[i+1]
+        body_cur = abs(cur.Close - cur.Open)
+        body_prev = abs(prev.Close - prev.Open)
+        body_next = abs(nxt.Close - nxt.Open)
+        if cur.Close < cur.Open and body_cur>body_prev*1.0 and body_cur>body_next*0.8:
+            rows.append({"Index":i,"Type":"Bearish OB","Price":cur.Close,"Top":cur.High,"Bottom":cur.Low,"Strategy":"OB"})
+        if cur.Close > cur.Open and body_cur>body_prev*1.0 and body_cur>body_next*0.8:
+            rows.append({"Index":i,"Type":"Bullish OB","Price":cur.Close,"Top":cur.High,"Bottom":cur.Low,"Strategy":"OB"})
+    return pd.DataFrame(rows)
 
-# -------- Run Analysis --------
-if run_analysis_btn:
+def detect_fvg(data):
+    rows=[]
+    for i in range(1,len(data)-1):
+        cur,nxt = data.iloc[i],data.iloc[i+1]
+        if cur.High < nxt.Low:
+            rows.append({"Index":i,"Type":"Bullish FVG","Price":(cur.High+nxt.Low)/2,"Top":nxt.Low,"Bottom":cur.High,"Strategy":"FVG"})
+        if cur.Low > nxt.High:
+            rows.append({"Index":i,"Type":"Bearish FVG","Price":(cur.Low+nxt.High)/2,"Top":cur.Low,"Bottom":nxt.High,"Strategy":"FVG"})
+    return pd.DataFrame(rows)
+
+def detect_patterns(data):
+    rows=[]
+    for i in range(1,len(data)):
+        prev, cur = data.iloc[i-1], data.iloc[i]
+        if prev.Close<prev.Open and cur.Close>cur.Open and cur.Close>prev.Open and cur.Open<prev.Close:
+            rows.append({"Index":i,"Type":"Bullish Engulfing","Price":cur.Close,"Top":cur.High,"Bottom":cur.Low,"Strategy":"Pattern"})
+        if prev.Close>prev.Open and cur.Close<cur.Open and cur.Open>prev.Close and cur.Close<prev.Open:
+            rows.append({"Index":i,"Type":"Bearish Engulfing","Price":cur.Close,"Top":cur.High,"Bottom":cur.Low,"Strategy":"Pattern"})
+    return pd.DataFrame(rows)
+
+def run_analysis_func(df, use_ob, use_fvg, use_patterns):
+    signals = pd.DataFrame()
+    if use_ob: s=detect_ob(df); s['StrategyName']='OB Strategy'; signals=pd.concat([signals,s],ignore_index=True)
+    if use_fvg: s=detect_fvg(df); s['StrategyName']='FVG Strategy'; signals=pd.concat([signals,s],ignore_index=True)
+    if use_patterns: s=detect_patterns(df); s['StrategyName']='Pattern Recognition'; signals=pd.concat([signals,s],ignore_index=True)
+    if not signals.empty: signals['Index']=signals['Index'].astype(int)
+    return signals
+
+def simulate_trades(signals, df):
+    trades=[]
+    for _, s in signals.iterrows():
+        idx=int(s['Index']); typ=s['Type']; price=s['Price']
+        if "Bull" in typ:
+            entry=price; sl=entry-0.005*entry; tp=entry+0.02*entry; direction="Long"
+        else:
+            entry=price; sl=entry+0.005*entry; tp=entry-0.02*entry; direction="Short"
+        hit=None
+        for j in range(idx+1,min(idx+21,len(df))):
+            high, low = df.iloc[j].High, df.iloc[j].Low
+            if direction=="Long":
+                if low<=sl: hit="SL"; break
+                if high>=tp: hit="TP"; break
+            else:
+                if high>=sl: hit="SL"; break
+                if low<=tp: hit="TP"; break
+        if hit=="TP": profit=abs(tp-entry); win=1
+        elif hit=="SL": profit=-abs(entry-sl); win=0
+        else:
+            last_close=df.iloc[min(idx+20,len(df)-1)].Close
+            profit=(last_close-entry) if direction=="Long" else (entry-last_close)
+            win=1 if profit>0 else 0
+        trades.append({"Idx":idx,"Type":typ,"StrategyName":s.get("StrategyName",""),"Entry":entry,"SL":sl,"TP":tp,"Profit":profit,"Win":win})
+    trades_df=pd.DataFrame(trades)
+    if not trades_df.empty: trades_df['CumulativeProfit']=trades_df['Profit'].cumsum()
+    return trades_df
+
+# ---------------------------
+# Session storage for button results
+if 'signals_df' not in st.session_state: st.session_state['signals_df']=pd.DataFrame()
+if 'trades_df' not in st.session_state: st.session_state['trades_df']=pd.DataFrame()
+
+# Run Analysis button
+run_now = st.button("▶️ Run Analysis")
+
+if run_now:
     df = st.session_state['market_df']
-    signals_df = run_analysis(df, use_ob, use_fvg, use_patterns)
-    trades_df = simulate_trades(signals_df, df) if not signals_df.empty else pd.DataFrame()
-    st.session_state['signals_df'] = signals_df
-    st.session_state['trades_df'] = trades_df
+    signals_df = run_analysis_func(df,use_ob,use_fvg,use_patterns)
+    trades_df = simulate_trades(signals_df,df) if not signals_df.empty else pd.DataFrame()
+    st.session_state['signals_df']=signals_df
+    st.session_state['trades_df']=trades_df
 
-signals_df = st.session_state.get('signals_df', pd.DataFrame())
-trades_df = st.session_state.get('trades_df', pd.DataFrame())
+signals_df = st.session_state['signals_df']
+trades_df = st.session_state['trades_df']
 
-# -------- Layout: Left + Right --------
-left, right = st.columns([1,2])
-with left:
-    st.subheader("Signals & Trades")
-    st.dataframe(signals_df.tail(10))
-    st.dataframe(trades_df.tail(10))
+# ---------------------------
+# TradingView Widget
+st.subheader("TradingView Widget")
+tv_html=f"""
+<div id="tv_chart" style="height:520px;"></div>
+<script src="https://s3.tradingview.com/tv.js"></script>
+<script>
+new TradingView.widget({{
+  "width":"100%",
+  "height":520,
+  "symbol":"{frontend_pair}",
+  "interval":"{timeframe}",
+  "timezone":"Etc/UTC",
+  "theme":"dark",
+  "style":1,
+  "container_id":"tv_chart"
+}});
+</script>
+"""
+components.html(tv_html,height=540)
 
-with right:
-    st.subheader("TradingView Chart")
-    tv_html = f"""
-    <div id="tv_widget" style="height:700px;"></div>
-    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-    <script type="text/javascript">
-      new TradingView.widget({{
-        "container_id": "tv_widget",
-        "autosize": true,
-        "symbol": "{selected_front_pair}",
-        "interval": "{timeframe}",
-        "timezone": "Etc/UTC",
-        "theme": "dark",
-        "style": "1",
-        "locale": "en",
-        "toolbar_bg": "#f1f3f6",
-        "enable_publishing": false,
-        "allow_symbol_change": true
-      }});
-    </script>
-    """
-    components.html(tv_html, height=720)
+# ---------------------------
+# Show Signals / Summary
+st.subheader("Signals & Summary")
+if signals_df.empty: st.info("No signals detected. Click ▶️ Run Analysis.")
+else:
+    display=signals_df.copy()
+    display['Time']=display['Index'].apply(lambda i: df.index[int(i)].strftime("%Y-%m-%d %H:%M"))
+    display=display[['Time','Type','StrategyName','Price']]
+    st.dataframe(display.sort_values(by='Time',ascending=False).reset_index(drop=True),height=300)
+
+if not trades_df.empty:
+    summary = trades_df.groupby('StrategyName').agg(
+        Total_Trades=('Win','count'),
+        Total_Profit=('Profit','sum'),
+        Win_Rate=('Win','mean')
+    ).reset_index()
+    summary['Win_Rate']=(summary['Win_Rate']*100).round(2)
+    summary['Total_Profit']=summary['Total_Profit'].round(6)
+    st.subheader("Performance Summary")
+    st.table(summary)
+
+# Export buttons
+if export_csv:
+    if not signals_df.empty:
+        st.download_button("⬇️ Download Signals CSV",signals_df.to_csv(index=False).encode('utf-8'),file_name=f"{frontend_pair}_signals.csv")
+    if not trades_df.empty:
+        st.download_button("⬇️ Download Trades CSV",trades_df.to_csv(index=False).encode('utf-8'),file_name=f"{frontend_pair}_trades.csv")

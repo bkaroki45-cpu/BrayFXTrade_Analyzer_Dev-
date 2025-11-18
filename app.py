@@ -1,4 +1,4 @@
-# BrayFXTrade Analyzer - Streamlit App (Safe Signals Table Version)
+# BrayFXTrade Analyzer - Streamlit App (Enhanced Demo with Entry, SL, TP & Chart Markers)
 
 import streamlit as st
 import yfinance as yf
@@ -25,7 +25,7 @@ def fetch_data(ticker: str, start: str, end: str, interval: str = '1d') -> pd.Da
     data = data.sort_index()
     return data
 
-# Placeholder analysis functions with dummy signal/outcome columns
+# ---------------------- Placeholder Analysis Functions ----------------------
 
 def detect_order_blocks(df, lookback=20): return df.copy()
 def detect_fvg(df): return df.copy()
@@ -35,15 +35,27 @@ def generate_signals(df, strategy='OB+FVG'):
     df = df.copy()
     if 'signal' not in df.columns:
         df['signal'] = np.nan
-    df.loc[df.index[::5], 'signal'] = 'buy'  # dummy signals
+        df['entry'] = np.nan
+        df['sl'] = np.nan
+        df['tp'] = np.nan
+    # Dummy signals: every 5th bar is a buy
+    df.loc[df.index[::5], 'signal'] = 'buy'
+    df.loc[df.index[::5], 'entry'] = df['Close'][::5] * 1.001  # example entry slightly above close
+    df.loc[df.index[::5], 'sl'] = df['Close'][::5] * 0.995     # example SL slightly below close
+    df.loc[df.index[::5], 'tp'] = df['Close'][::5] * 1.01      # example TP slightly above close
     return df
 
 def backtest_signals(df, look_forward=24):
     df = df.copy()
     if 'outcome' not in df.columns:
         df['outcome'] = np.nan
-    df.loc[df.index[::10], 'outcome'] = 'win'
-    df.loc[df.index[1::10], 'outcome'] = 'loss'
+        df['profit'] = np.nan
+    # Dummy backtest: 50% chance win for each signal
+    np.random.seed(42)
+    signals_idx = df.index[df['signal'].notna()]
+    outcomes = np.random.choice(['win','loss'], size=len(signals_idx))
+    df.loc[signals_idx, 'outcome'] = outcomes
+    df.loc[signals_idx, 'profit'] = np.where(df.loc[signals_idx, 'outcome']=='win', df.loc[signals_idx, 'tp']-df.loc[signals_idx, 'entry'], df.loc[signals_idx, 'sl']-df.loc[signals_idx, 'entry'])
     return df
 
 # ---------------------- Streamlit UI ----------------------
@@ -88,10 +100,9 @@ if run_button:
             df_bt = df_sig.copy()
 
         # ---------------------- Defensive Checks ----------------------
-        if 'signal' not in df_bt.columns:
-            df_bt['signal'] = np.nan
-        if 'outcome' not in df_bt.columns:
-            df_bt['outcome'] = np.nan
+        for col in ['signal','outcome','entry','sl','tp','profit']:
+            if col not in df_bt.columns:
+                df_bt[col] = np.nan
 
         # ---------------------- Performance Summary ----------------------
         total_signals = df_bt['signal'].notna().sum()
@@ -105,9 +116,9 @@ if run_button:
         col3.metric("Losses", int(losses))
         col4.metric("Win Rate", f"{win_rate:.2f}%" if not np.isnan(win_rate) else "N/A")
 
-        # ---------------------- Signals Table (Safe) ----------------------
+        # ---------------------- Signals Table ----------------------
         st.subheader("Signals Table")
-        display_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'OB_type', 'FVG', 'pattern', 'signal', 'entry', 'sl', 'tp', 'outcome', 'profit']
+        display_cols = ['Open','High','Low','Close','Volume','signal','entry','sl','tp','outcome','profit']
         df_display = df_bt.reset_index()
         try:
             cols_to_show = ['index'] + [c for c in display_cols if c in df_display.columns]
@@ -115,19 +126,25 @@ if run_button:
         except KeyError:
             st.warning("Some columns are missing in the signals table. Showing available columns.")
             df_display = df_display.sort_values(df_display.columns[0], ascending=False)
-
         st.dataframe(df_display)
 
-        # ---------------------- Chart ----------------------
+        # ---------------------- Chart & Markers ----------------------
         st.subheader("Chart & Signals")
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25], vertical_spacing=0.02)
-        fig.add_trace(go.Candlestick(x=df_bt.index, open=df_bt['Open'], high=df_bt['High'], low=df_bt['Low'], close=df_bt['Close'], name='Price'), row=1, col=1)
-        st.plotly_chart(fig, use_container_width=True)
+        fig = make_subplots(rows=1, cols=1, shared_xaxes=True)
+        fig.add_trace(go.Candlestick(x=df_bt.index, open=df_bt['Open'], high=df_bt['High'], low=df_bt['Low'], close=df_bt['Close'], name='Price'))
 
-        st.success("Analysis complete.")
+        # Add markers for signals
+        buy_signals = df_bt[df_bt['signal']=='buy']
+        sell_signals = df_bt[df_bt['signal']=='sell'] if 'sell' in df_bt['signal'].values else pd.DataFrame()
+        fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals['entry'], mode='markers', marker=dict(color='green', size=10, symbol='triangle-up'), name='Buy'))
+        if not sell_signals.empty:
+            fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals['entry'], mode='markers', marker=dict(color='red', size=10, symbol='triangle-down'), name='Sell'))
+
+        st.plotly_chart(fig, use_container_width=True)
+        st.success("Analysis complete with Entry, SL, TP and chart markers.")
 
 else:
     st.info("Configure settings in the sidebar and click 'Run Analysis' to begin.")
 
 st.markdown("---")
-st.markdown("Built by BrayFXTrade Analyzer — demo heuristics for OB/FVG and simple pattern detection.")
+st.markdown("Built by BrayFXTrade Analyzer — demo heuristics with signals and chart markers.")

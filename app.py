@@ -1,3 +1,4 @@
+# brayfxtrade_pro_full.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -6,11 +7,12 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
-# ----------------------------
+# ---------------------------
+# App Config
 st.set_page_config(page_title="BrayFXTrade Analyzer — Pro", layout="wide")
 st.title("💹 BrayFXTrade Analyzer — Pro (TradingView-style)")
 
-# ----------------------------
+# ---------------------------
 # Sidebar
 with st.sidebar:
     st.header("Settings")
@@ -29,6 +31,9 @@ with st.sidebar:
     st.subheader("Run / Live Options")
     auto_refresh = st.checkbox("Auto-refresh (Live only)", value=False)
     refresh_interval = st.number_input("Refresh interval (s)", min_value=10, value=60, step=10)
+    st.markdown("---")
+    export_csv = st.checkbox("Show Export Buttons", value=True)
+    st.markdown("Built by BrayFXTrade Analyzer — demo heuristics for OB/FVG and chart patterns.")
 
 # Backend mapping for Yahoo Finance symbols
 YF_MAP = {"EURUSD":"EURUSD=X","GBPUSD":"GBPUSD=X","USDJPY":"USDJPY=X","AUDUSD":"AUDUSD=X",
@@ -36,7 +41,7 @@ YF_MAP = {"EURUSD":"EURUSD=X","GBPUSD":"GBPUSD=X","USDJPY":"USDJPY=X","AUDUSD":"
           "BTC":"BTC-USD","ETH":"ETH-USD"}
 yf_symbol = YF_MAP[pair_clean]
 
-# ----------------------------
+# ---------------------------
 # Fetch data
 @st.cache_data(ttl=60)
 def fetch_data(symbol,start,end,interval):
@@ -45,29 +50,65 @@ def fetch_data(symbol,start,end,interval):
         df = df.dropna(subset=['Open','High','Low','Close'])
         df.index = df.index.tz_localize(None)
         return df
-    except:
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
 
 TF_MAP = {"1H":"60m","4H":"60m","1D":"1d","15m":"15m","5m":"5m"}
 raw_df = fetch_data(yf_symbol, start_date, end_date, TF_MAP.get(timeframe,"60m"))
-# Resample 4H
+
+# Resample 4H if requested
 if timeframe=="4H" and not raw_df.empty:
     df = raw_df.resample('4H').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
 else:
     df = raw_df.copy()
 
-if df.empty:
-    st.error(f"No data for {pair_clean} in {timeframe}. Try different range.")
-    st.stop()
+# Keep df in session_state
 st.session_state['market_df'] = df
 
-# ----------------------------
-# Run Analysis button
-st.markdown("---")
-run_now = st.button("▶️ Run Analysis")
+if df.empty:
+    st.error(f"No data for {pair_clean} in {timeframe}. Try a different range.")
+    st.stop()
 
-# ----------------------------
-# OB/FVG/Patterns detection functions (same as your previous code)
+# ---------------------------
+# Quick Stats panel
+st.subheader("Quick Stats")
+st.write(f"Mode: **{mode}**")
+st.write(f"Pair: **{pair_clean}**")
+st.write(f"Timeframe: **{timeframe}**")
+st.write(f"Range: **{start_date} → {end_date}**")
+st.write("Strategies enabled:")
+st.write(f"- OB: {'✅' if use_ob else '❌'}  ")
+st.write(f"- FVG: {'✅' if use_fvg else '❌'}  ")
+st.write(f"- Patterns: {'✅' if use_patterns else '❌'}  ")
+
+# ---------------------------
+# TradingView Widget (resizable)
+st.subheader("TradingView Widget (interactive)")
+tv_html = f"""
+<div id="tradingview_widget" style="height:520px;"></div>
+<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+<script type="text/javascript">
+new TradingView.widget({{
+  "width": "100%",
+  "height": 520,
+  "symbol": "{pair_clean}",
+  "interval": "{timeframe}",
+  "timezone": "Etc/UTC",
+  "theme": "dark",
+  "style": 1,
+  "locale": "en",
+  "toolbar_bg": "#f1f3f6",
+  "enable_publishing": false,
+  "allow_symbol_change": true,
+  "container_id": "tradingview_widget"
+}});
+</script>
+"""
+components.html(tv_html, height=540)
+
+# ---------------------------
+# Analysis functions
 def detect_ob(data):
     rows=[]
     for i in range(1,len(data)-1):
@@ -101,33 +142,36 @@ def detect_patterns(data):
             rows.append({"Index":i,"Type":"Bearish Engulfing","Price":cur.Close,"Top":cur.High,"Bottom":cur.Low,"Strategy":"Pattern"})
     return pd.DataFrame(rows)
 
-# ----------------------------
-# Run analysis logic
+# ---------------------------
+# Run Analysis Button
+st.markdown("---")
+run_now = st.button("▶️ Run Analysis")
+
 if run_now:
     df = st.session_state['market_df']
-    signals_df=pd.DataFrame()
+    signals_df = pd.DataFrame()
     if use_ob:
-        s=detect_ob(df); s['StrategyName']='OB Strategy'; signals_df=pd.concat([signals_df,s],ignore_index=True)
+        s = detect_ob(df); s['StrategyName']='OB Strategy'; signals_df=pd.concat([signals_df,s],ignore_index=True)
     if use_fvg:
-        s=detect_fvg(df); s['StrategyName']='FVG Strategy'; signals_df=pd.concat([signals_df,s],ignore_index=True)
+        s = detect_fvg(df); s['StrategyName']='FVG Strategy'; signals_df=pd.concat([signals_df,s],ignore_index=True)
     if use_patterns:
-        s=detect_patterns(df); s['StrategyName']='Pattern Recognition'; signals_df=pd.concat([signals_df,s],ignore_index=True)
-    st.session_state['signals_df']=signals_df
+        s = detect_patterns(df); s['StrategyName']='Pattern Recognition'; signals_df=pd.concat([signals_df,s],ignore_index=True)
+    st.session_state['signals_df'] = signals_df
 
-# ----------------------------
-# Show results on Plotly chart
+# ---------------------------
+# Display Plotly Chart + Signals
 signals_df = st.session_state.get('signals_df', pd.DataFrame())
 col1, col2 = st.columns([2,1])
+
 with col1:
-    st.subheader("Interactive Plotly Chart")
+    st.subheader("Programmatic Plotly Chart")
     fig = go.Figure(data=[go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         increasing_line_color='green', decreasing_line_color='red', name='Price'
     )])
-    # Draw OB/FVG/patterns
     if not signals_df.empty:
         for _, s in signals_df.iterrows():
-            idx=int(s['Index'])
+            idx = int(s['Index'])
             if idx>=len(df): continue
             t0 = df.index[idx]
             top, bottom = s['Top'], s['Bottom']
@@ -145,6 +189,18 @@ with col2:
     if signals_df.empty:
         st.info("Click ▶️ Run Analysis to detect OB/FVG/patterns.")
     else:
-        display=signals_df[['Index','Type','StrategyName','Price']].copy()
+        display = signals_df[['Index','Type','StrategyName','Price']].copy()
         display['Time'] = display['Index'].apply(lambda i: df.index[int(i)].strftime("%Y-%m-%d %H:%M"))
         st.dataframe(display.sort_values(by='Time', ascending=False).reset_index(drop=True), height=300)
+
+# ---------------------------
+# Export CSV buttons
+if export_csv and not signals_df.empty:
+    csv = signals_df.to_csv(index=False).encode('utf-8')
+    st.download_button("⬇️ Download Signals CSV", csv, file_name=f"{pair_clean}_signals.csv", mime="text/csv")
+
+# ---------------------------
+# Auto-refresh Live Mode
+if mode=="Live Analysis" and auto_refresh:
+    st.info(f"Auto-refreshing every {refresh_interval} seconds...")
+    st.experimental_rerun()

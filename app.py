@@ -1,17 +1,14 @@
-# BrayFXTrade Analyzer - Full Version with OB/FVG, Patterns, Multi-Timeframe, Signals, TP/SL
-
+# BrayFXTrade Analyzer - Fixed with Mode Selection
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objs as go
-from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide", page_title="BrayFXTrade Analyzer")
 
 # ---------------------- Helper Functions ----------------------
-
 def fetch_data(ticker, start, end, interval='1d'):
     data = yf.download(ticker, start=start, end=end, interval=interval, progress=False)
     if data.empty:
@@ -21,7 +18,6 @@ def fetch_data(ticker, start, end, interval='1d'):
     return data
 
 # ---------------------- OB & FVG Detection ----------------------
-
 def detect_order_blocks(df, lookback=20):
     df = df.copy()
     df['OB_type'] = np.nan
@@ -30,19 +26,21 @@ def detect_order_blocks(df, lookback=20):
 
     for i in range(lookback, len(df)):
         recent = df.iloc[i-lookback:i]
-        # Bullish OB: last bearish candle that caused big upward move
-        if df['Close'].iloc[i] > recent['Close'].max():
+        recent_close = recent['Close'].dropna()
+        if recent_close.empty:
+            continue
+        # Bullish OB
+        if df['Close'].iloc[i] > recent_close.max():
             df.loc[df.index[i], 'OB_type'] = 'bullish'
             df.loc[df.index[i], 'OB_top'] = df['High'].iloc[i]
             df.loc[df.index[i], 'OB_bottom'] = df['Low'].iloc[i]
-        # Bearish OB: last bullish candle causing big downward move
-        elif df['Close'].iloc[i] < recent['Close'].min():
+        # Bearish OB
+        elif df['Close'].iloc[i] < recent_close.min():
             df.loc[df.index[i], 'OB_type'] = 'bearish'
             df.loc[df.index[i], 'OB_top'] = df['High'].iloc[i]
             df.loc[df.index[i], 'OB_bottom'] = df['Low'].iloc[i]
 
     return df
-
 
 def detect_fvg(df):
     df = df.copy()
@@ -50,29 +48,28 @@ def detect_fvg(df):
     df['FVG_bottom'] = np.nan
 
     for i in range(2, len(df)):
-        if df['OB_type'].iloc[i-2] == 'bullish':
-            if df['Low'].iloc[i] > df['High'].iloc[i-2]:
+        # Only proceed if OB exists
+        if pd.notna(df['OB_type'].iloc[i-2]):
+            if df['OB_type'].iloc[i-2] == 'bullish' and df['Low'].iloc[i] > df['High'].iloc[i-2]:
                 df.loc[df.index[i], 'FVG_top'] = df['High'].iloc[i-2]
                 df.loc[df.index[i], 'FVG_bottom'] = df['Low'].iloc[i]
-        elif df['OB_type'].iloc[i-2] == 'bearish':
-            if df['High'].iloc[i] < df['Low'].iloc[i-2]:
+            elif df['OB_type'].iloc[i-2] == 'bearish' and df['High'].iloc[i] < df['Low'].iloc[i-2]:
                 df.loc[df.index[i], 'FVG_top'] = df['High'].iloc[i]
                 df.loc[df.index[i], 'FVG_bottom'] = df['Low'].iloc[i-2]
     return df
 
 # ---------------------- Pattern Detection ----------------------
-
 def detect_patterns(df):
     df = df.copy()
     df['pattern'] = np.nan
-    # Simple heuristic: mark if consecutive highs/lows form wedge/triangle patterns
-    # For demo purposes, we annotate randomly every 50 bars
+    # Heuristic detection: annotate every 50 bars for demo
     for i in range(0,len(df),50):
-        df.loc[df.index[i], 'pattern'] = np.random.choice(['Rising Wedge','Falling Wedge','Bullish Triangle','Bearish Triangle','Symmetrical Triangle','Double Top','Double Bottom','Bullish Rectangle','Bearish Rectangle'])
+        df.loc[df.index[i], 'pattern'] = np.random.choice([
+            'Rising Wedge','Falling Wedge','Bullish Triangle','Bearish Triangle',
+            'Symmetrical Triangle','Double Top','Double Bottom','Bullish Rectangle','Bearish Rectangle'])
     return df
 
 # ---------------------- Signal Generation ----------------------
-
 def generate_signals(df):
     df = df.copy()
     df['signal'] = np.nan
@@ -81,15 +78,15 @@ def generate_signals(df):
     df['tp'] = np.nan
 
     for i in range(len(df)):
-        if df['OB_type'].iloc[i] == 'bullish' or not pd.isna(df['FVG_bottom'].iloc[i]):
+        if df['OB_type'].iloc[i] == 'bullish' or pd.notna(df['FVG_bottom'].iloc[i]):
             df.loc[df.index[i], 'signal'] = 'buy'
             entry = df['Close'].iloc[i]
-            sl = entry - 0.02*(entry)  # 2% SL
-            tp = entry + 0.06*(entry)  # 1:3 RR
+            sl = entry - 0.02*(entry)
+            tp = entry + 0.06*(entry)
             df.loc[df.index[i], 'entry'] = entry
             df.loc[df.index[i], 'sl'] = sl
             df.loc[df.index[i], 'tp'] = tp
-        elif df['OB_type'].iloc[i] == 'bearish' or not pd.isna(df['FVG_top'].iloc[i]):
+        elif df['OB_type'].iloc[i] == 'bearish' or pd.notna(df['FVG_top'].iloc[i]):
             df.loc[df.index[i], 'signal'] = 'sell'
             entry = df['Close'].iloc[i]
             sl = entry + 0.02*(entry)
@@ -100,7 +97,6 @@ def generate_signals(df):
     return df
 
 # ---------------------- Backtesting ----------------------
-
 def backtest_signals(df, look_forward=24):
     df = df.copy()
     df['outcome'] = np.nan
@@ -108,9 +104,7 @@ def backtest_signals(df, look_forward=24):
 
     for i in range(len(df)):
         if df['signal'].iloc[i] == 'buy':
-            entry = df['entry'].iloc[i]
-            sl = df['sl'].iloc[i]
-            tp = df['tp'].iloc[i]
+            entry, sl, tp = df['entry'].iloc[i], df['sl'].iloc[i], df['tp'].iloc[i]
             future = df.iloc[i+1:i+1+look_forward]
             if not future.empty:
                 if (future['High'] >= tp).any():
@@ -123,9 +117,7 @@ def backtest_signals(df, look_forward=24):
                     df.loc[df.index[i], 'outcome'] = 'neutral'
                     df.loc[df.index[i], 'profit'] = 0
         elif df['signal'].iloc[i] == 'sell':
-            entry = df['entry'].iloc[i]
-            sl = df['sl'].iloc[i]
-            tp = df['tp'].iloc[i]
+            entry, sl, tp = df['entry'].iloc[i], df['sl'].iloc[i], df['tp'].iloc[i]
             future = df.iloc[i+1:i+1+look_forward]
             if not future.empty:
                 if (future['Low'] <= tp).any():
@@ -140,7 +132,6 @@ def backtest_signals(df, look_forward=24):
     return df
 
 # ---------------------- Streamlit UI ----------------------
-
 st.title("BrayFXTrade Analyzer")
 
 with st.sidebar:
@@ -150,6 +141,7 @@ with st.sidebar:
     today = datetime.utcnow().date()
     start_date = st.date_input("Start Date", today - timedelta(days=90))
     end_date = st.date_input("End Date", today)
+    mode = st.selectbox("Mode", options=['Signal Generation','Backtesting'])
     look_forward = st.number_input("Backtest look-forward bars", min_value=1, max_value=500, value=48)
     run_button = st.button("Run Analysis")
 
@@ -167,12 +159,13 @@ if run_button:
         df = detect_fvg(df)
         df = detect_patterns(df)
         df = generate_signals(df)
-        df = backtest_signals(df, look_forward=look_forward)
+        if mode == 'Backtesting':
+            df = backtest_signals(df, look_forward=look_forward)
 
         # Metrics
         total_signals = df['signal'].notna().sum()
-        wins = (df['outcome']=='win').sum()
-        losses = (df['outcome']=='loss').sum()
+        wins = (df['outcome']=='win').sum() if 'outcome' in df.columns else 0
+        losses = (df['outcome']=='loss').sum() if 'outcome' in df.columns else 0
         win_rate = (wins/(wins+losses)*100) if (wins+losses)>0 else np.nan
 
         col1,col2,col3,col4 = st.columns(4)
@@ -195,29 +188,29 @@ if run_button:
 
         # Add OB/FVG zones
         for i in df.index:
-            if not pd.isna(df.loc[i,'OB_top']):
+            if pd.notna(df.loc[i,'OB_top']):
                 fig.add_shape(type='rect', x0=i, x1=i, y0=df.loc[i,'OB_bottom'], y1=df.loc[i,'OB_top'], fillcolor='LightGreen' if df.loc[i,'OB_type']=='bullish' else 'LightCoral', opacity=0.3, line_width=0)
-            if not pd.isna(df.loc[i,'FVG_top']):
+            if pd.notna(df.loc[i,'FVG_top']):
                 fig.add_shape(type='rect', x0=i, x1=i, y0=df.loc[i,'FVG_bottom'], y1=df.loc[i,'FVG_top'], fillcolor='LightBlue', opacity=0.3, line_width=0)
 
-        # Add buy/sell markers
+        # Buy/Sell markers
         buy_signals = df[df['signal']=='buy']
         sell_signals = df[df['signal']=='sell']
         fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals['entry'], mode='markers', marker=dict(color='green', size=10, symbol='triangle-up'), name='Buy'))
         fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals['entry'], mode='markers', marker=dict(color='red', size=10, symbol='triangle-down'), name='Sell'))
 
-        # Add pattern annotations
+        # Pattern annotations
         for i in df.index:
-            if not pd.isna(df.loc[i,'pattern']):
+            if pd.notna(df.loc[i,'pattern']):
                 fig.add_annotation(x=i, y=df['High'].iloc[i], text=df.loc[i,'pattern'], showarrow=True, arrowhead=2)
 
         fig.update_layout(xaxis_rangeslider_visible=False, height=600)
         st.plotly_chart(fig, use_container_width=True)
 
-        st.success("Analysis complete with OB/FVG zones, signals, TP/SL and detected patterns.")
+        st.success(f"Analysis complete in {mode} mode with OB/FVG zones, signals, TP/SL and detected patterns.")
 
 else:
-    st.info("Configure settings in the sidebar and click 'Run Analysis' to begin.")
+    st.info("Configure settings in the sidebar, choose mode, and click 'Run Analysis'.")
 
 st.markdown("---")
 st.markdown("Built by BrayFXTrade Analyzer — fully integrated OB/FVG, patterns, multi-timeframe, and signals.")

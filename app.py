@@ -13,10 +13,10 @@ Original file is located at
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
+import numpy as npgive 
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 st.set_page_config(layout="wide", page_title="BrayFXTrade Analyzer")
 
@@ -38,7 +38,7 @@ def detect_order_blocks(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     Detect bullish/bearish order blocks safely.
     """
     df = df.copy()
-    df = df.dropna(subset=['Open', 'Close', 'High', 'Low'])  # drop missing OHLC
+    df = df.dropna(subset=['Open', 'Close', 'High', 'Low'])
 
     df['OB_type'] = None
     df['OB_level'] = np.nan
@@ -68,6 +68,7 @@ def detect_order_blocks(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
 
     return df
 
+
   
 
 
@@ -76,7 +77,7 @@ def detect_fvg(df: pd.DataFrame) -> pd.DataFrame:
     Detect basic Fair Value Gaps (FVG) using 3-candle structure.
     """
     df = df.copy()
-    df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])  # ensure no missing data
+    df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
 
     df['FVG'] = None
     df['FVG_top'] = np.nan
@@ -102,16 +103,15 @@ def detect_fvg(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
+
 def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Detect simple chart patterns: double top / double bottom and support/resistance breakouts.
-    Returns df with column 'pattern' and optionally pattern levels.
     """
     df = df.copy()
     df['pattern'] = None
     df['pattern_level'] = np.nan
 
-    # Find local maxima/minima using rolling windows
     highs = df['High']
     lows = df['Low']
     window = 10
@@ -119,21 +119,18 @@ def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
     local_max = (highs == highs.rolling(window, center=True, min_periods=1).max())
     local_min = (lows == lows.rolling(window, center=True, min_periods=1).min())
 
-    # collect peaks
     peaks = df[local_max].index
     troughs = df[local_min].index
 
-    # Check for double top: two peaks near same level separated by a trough
+    # Double top
     for i in range(len(peaks)-1):
         p1 = peaks[i]
         p2 = peaks[i+1]
-        # ensure there is at least one trough between
         between = troughs[(troughs > p1) & (troughs < p2)]
         if len(between) >= 1:
             level1 = df.at[p1, 'High']
             level2 = df.at[p2, 'High']
-            if abs(level1 - level2) / max(level1, level2) < 0.01:  # within 1%
-                # mark the second peak as double top
+            if abs(level1 - level2) / max(level1, level2) < 0.01:
                 df.at[p2, 'pattern'] = 'double_top'
                 df.at[p2, 'pattern_level'] = (level1 + level2) / 2
 
@@ -155,10 +152,10 @@ def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
+
 def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
     """
-    For each generated signal (including OB/FVG/patterns), look forward N bars and determine
-    whether TP or SL was hit first. Adds columns: outcome (win/loss/no_hit), profit.
+    For each generated signal, look forward N bars and determine whether TP or SL was hit first.
     """
     df = df.copy()
     df['outcome'] = None
@@ -170,7 +167,6 @@ def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
         sl = df.iloc[i].get('sl')
         tp = df.iloc[i].get('tp')
         
-        # Skip if signal or required prices are missing
         if pd.isna(sig) or pd.isna(entry) or pd.isna(sl) or pd.isna(tp):
             continue
 
@@ -182,7 +178,7 @@ def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
             low = df.iloc[j]['Low']
 
             if sig.lower() == 'long':
-                if low <= sl and high >= tp:  # both hit
+                if low <= sl and high >= tp:
                     if (tp - entry) >= (entry - sl):
                         hit = 'win'
                         profit = tp - entry
@@ -197,7 +193,7 @@ def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
                     profit = tp - entry
 
             elif sig.lower() == 'short':
-                if high >= sl and low <= tp:  # both hit
+                if high >= sl and low <= tp:
                     if (entry - tp) >= (sl - entry):
                         hit = 'win'
                         profit = entry - tp
@@ -216,7 +212,6 @@ def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
                 df.at[df.index[i], 'profit'] = profit
                 break
 
-        # If no TP/SL hit within look_forward bars
         if pd.isna(df.at[df.index[i], 'outcome']):
             last_close = df.iloc[end]['Close']
             if sig.lower() == 'long':
@@ -227,6 +222,7 @@ def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
                 df.at[df.index[i], 'profit'] = entry - last_close
 
     return df
+
 
 
 

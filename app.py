@@ -35,42 +35,49 @@ def fetch_data(ticker: str, start: str, end: str, interval: str = '1h') -> pd.Da
 
 def detect_order_blocks(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     """
-    Simple heuristic to detect potential bullish/bearish order blocks:
-    - Bullish OB: a bearish candle (Close < Open) followed by strong bullish continuation
-    - Bearish OB: a bullish candle followed by strong bearish continuation
-    Marks the high/low of the OB candle as level.
-    Returns df with columns: OB_type (None/bull/bear), OB_level
+    Detect bullish/bearish order blocks safely.
     """
     df = df.copy()
+    df = df.dropna(subset=['Open', 'Close', 'High', 'Low'])  # drop missing OHLC
+
     df['OB_type'] = None
     df['OB_level'] = np.nan
 
-    # Look for a reversal candle followed by momentum candle
     for i in range(1, len(df)-1):
-        prev = df.iloc[i-1]
         cur = df.iloc[i]
         nxt = df.iloc[i+1]
-        # bullish OB: cur is bearish, next candle bullish with larger body
-        body_cur = abs(cur.Close - cur.Open)
-        body_nxt = abs(nxt.Close - nxt.Open)
-        if cur.Close < cur.Open and nxt.Close > nxt.Open and body_nxt > body_cur * 0.8 and nxt.Close > cur.Open:
+
+        body_cur = abs(cur['Close'] - cur['Open'])
+        body_nxt = abs(nxt['Close'] - nxt['Open'])
+
+        # bullish OB
+        if float(cur['Close']) < float(cur['Open']) and \
+           float(nxt['Close']) > float(nxt['Open']) and \
+           body_nxt > body_cur * 0.8 and \
+           float(nxt['Close']) > float(cur['Open']):
             df.at[df.index[i], 'OB_type'] = 'bull'
-            df.at[df.index[i], 'OB_level'] = cur.Low  # use low as support
+            df.at[df.index[i], 'OB_level'] = float(cur['Low'])
+
         # bearish OB
-        elif cur.Close > cur.Open and nxt.Close < nxt.Open and body_nxt > body_cur * 0.8 and nxt.Close < cur.Open:
+        elif float(cur['Close']) > float(cur['Open']) and \
+             float(nxt['Close']) < float(nxt['Open']) and \
+             body_nxt > body_cur * 0.8 and \
+             float(nxt['Close']) < float(cur['Open']):
             df.at[df.index[i], 'OB_type'] = 'bear'
-            df.at[df.index[i], 'OB_level'] = cur.High  # use high as resistance
+            df.at[df.index[i], 'OB_level'] = float(cur['High'])
+
     return df
+
+  
 
 
 def detect_fvg(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Detect basic Fair Value Gaps (FVG) using 3-candle structure (common retail heuristic):
-    - Up-FVG (bullish gap): when candle1 high < candle3 low -> leaves gap between
-    - Down-FVG (bearish gap): candle1 low > candle3 high
-    We'll record gap top and bottom and the index where it occurs (at candle3)
+    Detect basic Fair Value Gaps (FVG) using 3-candle structure.
     """
     df = df.copy()
+    df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])  # ensure no missing data
+
     df['FVG'] = None
     df['FVG_top'] = np.nan
     df['FVG_bottom'] = np.nan
@@ -79,21 +86,20 @@ def detect_fvg(df: pd.DataFrame) -> pd.DataFrame:
         c1 = df.iloc[i-2]
         c2 = df.iloc[i-1]
         c3 = df.iloc[i]
-        # bullish gap (price moved up leaving space)
-        if c1['High'] < c3['Low']:
-            top = c3['Low']
-            bottom = c1['High']
+
+        # bullish gap
+        if float(c1['High']) < float(c3['Low']):
             df.at[df.index[i], 'FVG'] = 'bull'
-            df.at[df.index[i], 'FVG_top'] = top
-            df.at[df.index[i], 'FVG_bottom'] = bottom
+            df.at[df.index[i], 'FVG_top'] = float(c3['Low'])
+            df.at[df.index[i], 'FVG_bottom'] = float(c1['High'])
         # bearish gap
-        elif c1['Low'] > c3['High']:
-            top = c1['Low']
-            bottom = c3['High']
+        elif float(c1['Low']) > float(c3['High']):
             df.at[df.index[i], 'FVG'] = 'bear'
-            df.at[df.index[i], 'FVG_top'] = top
-            df.at[df.index[i], 'FVG_bottom'] = bottom
+            df.at[df.index[i], 'FVG_top'] = float(c1['Low'])
+            df.at[df.index[i], 'FVG_bottom'] = float(c3['High'])
+
     return df
+
 
 
 def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
@@ -146,106 +152,13 @@ def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def generate_signals(df: pd.DataFrame, strategy: str = 'OB+FVG') -> pd.DataFrame:
-    """
-    Combine OB, FVG and pattern detections into entry signals.
-    Strategy examples:
-    - 'OB' : trade on order blocks
-    - 'FVG': trade on fair value gaps
-    - 'OB+FVG': require both
-    Returns df with signals: 'signal' column (long/short/none) and Entry/SL/TP
-    """
-    df = df.copy()
-    df['signal'] = None
-    df['entry'] = np.nan
-    df['sl'] = np.nan
-    df['tp'] = np.nan
 
-    for i in range(len(df)):
-        row = df.iloc[i]
-        # prioritize pattern breakouts
-        if pd.notna(row.get('pattern')):
-            if row['pattern'] == 'double_bottom':
-                # long entry = next candle open, sl = pattern low, tp = risk*2
-                entry = row['Close']
-                sl = row['pattern_level'] * 0.995
-                rr = 2.0
-                tp = entry + (entry - sl) * rr
-                df.at[df.index[i], 'signal'] = 'long'
-                df.at[df.index[i], 'entry'] = entry
-                df.at[df.index[i], 'sl'] = sl
-                df.at[df.index[i], 'tp'] = tp
-            elif row['pattern'] == 'double_top':
-                entry = row['Close']
-                sl = row['pattern_level'] * 1.005
-                rr = 2.0
-                tp = entry - (sl - entry) * rr
-                df.at[df.index[i], 'signal'] = 'short'
-                df.at[df.index[i], 'entry'] = entry
-                df.at[df.index[i], 'sl'] = sl
-                df.at[df.index[i], 'tp'] = tp
-        # OB/FVG based signals
-        ob = row.get('OB_type')
-        fvg = row.get('FVG')
-        if strategy == 'OB' and pd.notna(ob):
-            if ob == 'bull':
-                entry = row['Close']
-                sl = row['OB_level'] * 0.995
-                tp = entry + (entry - sl) * 2
-                df.at[df.index[i], 'signal'] = 'long'
-                df.at[df.index[i], 'entry'] = entry
-                df.at[df.index[i], 'sl'] = sl
-                df.at[df.index[i], 'tp'] = tp
-            elif ob == 'bear':
-                entry = row['Close']
-                sl = row['OB_level'] * 1.005
-                tp = entry - (sl - entry) * 2
-                df.at[df.index[i], 'signal'] = 'short'
-                df.at[df.index[i], 'entry'] = entry
-                df.at[df.index[i], 'sl'] = sl
-                df.at[df.index[i], 'tp'] = tp
-        elif strategy == 'FVG' and pd.notna(fvg):
-            if fvg == 'bull':
-                entry = row['Close']
-                sl = row['FVG_bottom'] * 0.995
-                tp = entry + (entry - sl) * 2
-                df.at[df.index[i], 'signal'] = 'long'
-                df.at[df.index[i], 'entry'] = entry
-                df.at[df.index[i], 'sl'] = sl
-                df.at[df.index[i], 'tp'] = tp
-            elif fvg == 'bear':
-                entry = row['Close']
-                sl = row['FVG_top'] * 1.005
-                tp = entry - (sl - entry) * 2
-                df.at[df.index[i], 'signal'] = 'short'
-                df.at[df.index[i], 'entry'] = entry
-                df.at[df.index[i], 'sl'] = sl
-                df.at[df.index[i], 'tp'] = tp
-        elif strategy == 'OB+FVG' and pd.notna(ob) and pd.notna(fvg) and ob == 'bull' and fvg == 'bull':
-            entry = row['Close']
-            sl = min(row['OB_level'], row['FVG_bottom']) * 0.995
-            tp = entry + (entry - sl) * 2
-            df.at[df.index[i], 'signal'] = 'long'
-            df.at[df.index[i], 'entry'] = entry
-            df.at[df.index[i], 'sl'] = sl
-            df.at[df.index[i], 'tp'] = tp
-        elif strategy == 'OB+FVG' and pd.notna(ob) and pd.notna(fvg) and ob == 'bear' and fvg == 'bear':
-            entry = row['Close']
-            sl = max(row['OB_level'], row['FVG_top']) * 1.005
-            tp = entry - (sl - entry) * 2
-            df.at[df.index[i], 'signal'] = 'short'
-            df.at[df.index[i], 'entry'] = entry
-            df.at[df.index[i], 'sl'] = sl
-            df.at[df.index[i], 'tp'] = tp
-
-    return df
 
 
 def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
     """
-    For each generated signal, look forward N bars and determine whether TP or SL was hit first.
-    We'll simulate naive price path using High/Low of forward bars.
-    Adds columns: outcome (win/loss/na), profit (pips/price diff)
+    For each generated signal (including OB/FVG/patterns), look forward N bars and determine
+    whether TP or SL was hit first. Adds columns: outcome (win/loss/no_hit), profit.
     """
     df = df.copy()
     df['outcome'] = None
@@ -253,25 +166,24 @@ def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
 
     for i in range(len(df)):
         sig = df.iloc[i].get('signal')
-        if pd.isna(sig):
+        entry = df.iloc[i].get('entry')
+        sl = df.iloc[i].get('sl')
+        tp = df.iloc[i].get('tp')
+        
+        # Skip if signal or required prices are missing
+        if pd.isna(sig) or pd.isna(entry) or pd.isna(sl) or pd.isna(tp):
             continue
-        entry = df.iloc[i]['entry']
-        sl = df.iloc[i]['sl']
-        tp = df.iloc[i]['tp']
-        # scan forward
+
         end = min(len(df)-1, i + look_forward)
         hit = None
+
         for j in range(i+1, end+1):
             high = df.iloc[j]['High']
             low = df.iloc[j]['Low']
-            if sig == 'long':
-                # check SL then TP order not important; whichever hits first
-                if low <= sl and high >= tp:
-                    # both hit in same candle -> decide by closeness: whichever is crossed earlier (approx)
-                    # approximate by distances
-                    dist_sl = entry - sl
-                    dist_tp = tp - entry
-                    if dist_tp >= dist_sl:
+
+            if sig.lower() == 'long':
+                if low <= sl and high >= tp:  # both hit
+                    if (tp - entry) >= (entry - sl):
                         hit = 'win'
                         profit = tp - entry
                     else:
@@ -283,11 +195,10 @@ def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
                 elif high >= tp:
                     hit = 'win'
                     profit = tp - entry
-            elif sig == 'short':
-                if high >= sl and low <= tp:
-                    dist_sl = sl - entry
-                    dist_tp = entry - tp
-                    if dist_tp >= dist_sl:
+
+            elif sig.lower() == 'short':
+                if high >= sl and low <= tp:  # both hit
+                    if (entry - tp) >= (sl - entry):
                         hit = 'win'
                         profit = entry - tp
                     else:
@@ -299,21 +210,24 @@ def backtest_signals(df: pd.DataFrame, look_forward: int = 24) -> pd.DataFrame:
                 elif low <= tp:
                     hit = 'win'
                     profit = entry - tp
+
             if hit is not None:
                 df.at[df.index[i], 'outcome'] = hit
                 df.at[df.index[i], 'profit'] = profit
                 break
-        # if not hit within look_forward, label as 'no_hit' and mark profit as close-to-last
+
+        # If no TP/SL hit within look_forward bars
         if pd.isna(df.at[df.index[i], 'outcome']):
             last_close = df.iloc[end]['Close']
-            if sig == 'long':
+            if sig.lower() == 'long':
                 df.at[df.index[i], 'outcome'] = 'no_hit'
                 df.at[df.index[i], 'profit'] = last_close - entry
-            else:
+            elif sig.lower() == 'short':
                 df.at[df.index[i], 'outcome'] = 'no_hit'
                 df.at[df.index[i], 'profit'] = entry - last_close
 
     return df
+
 
 
 # ---------------------- Streamlit UI ----------------------

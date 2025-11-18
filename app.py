@@ -1,165 +1,455 @@
-# app.py
+# brayfxtrade_pro.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import streamlit.components.v1 as components
+from io import BytesIO
 
-st.set_page_config(page_title="BrayFXTrade Analyzer", layout="wide", page_icon="💹")
+# ---------------------------
+# App config
+st.set_page_config(page_title="BrayFXTrade Analyzer - Pro (TradingView-style)", layout="wide")
+st.title("💹 BrayFXTrade Analyzer — Pro (TradingView-style)")
 
-# ----------------- Sidebar -----------------
-st.sidebar.title("BrayFXTrade Analyzer Settings")
-mode = st.sidebar.selectbox("Mode", options=["Signal Generation", "Backtest"], index=1)
+# ---------------------------
+# Utilities & mappings
+TF_TO_YF_INTERVAL = {
+    "1H": "60m",
+    "4H": "60m",   # we'll resample to 4H from 60m
+    "1D": "1d",
+    "15m": "15m",
+    "5m": "5m"
+}
 
-pairs = st.sidebar.multiselect(
-    "Select Forex Pairs",
-    options=["EURUSD=X","GBPUSD=X","USDJPY=X","AUDUSD=X","USDCAD=X","USDCHF=X","NZDUSD=X"],
-    default=["EURUSD=X"]
-)
+ALL_PAIRS = [
+    "EURUSD=X","GBPUSD=X","USDJPY=X","AUDUSD=X","USDCAD=X",
+    "USDCHF=X","NZDUSD=X","GBPJPY=X","BTC-USD","ETH-USD"
+]
 
-timeframe = st.sidebar.selectbox(
-    "Timeframe",
-    options=["1M","1W","1D","4H","2H","1H","30min","15min","5min","3min","1min"],
-    index=2
-)
-
-start_date = st.sidebar.date_input("Start Date", pd.to_datetime("2023-01-01"))
-end_date = st.sidebar.date_input("End Date", pd.to_datetime("2025-11-18"))
-
-st.sidebar.markdown("---")
-
-# ----------------- Data Fetching -----------------
-@st.cache_data
-def fetch_data(ticker, start, end, interval):
-    interval_map = {
-        "1M":"1mo","1W":"1wk","1D":"1d","4H":"4h","2H":"2h","1H":"1h",
-        "30min":"30m","15min":"15m","5min":"5m","3min":"3m","1min":"1m"
-    }
-    try:
-        df = yf.download(ticker, start=start, end=end, interval=interval_map[interval])
-        df = df.reset_index()
-        if not all(col in df.columns for col in ['Open','High','Low','Close']):
-            return pd.DataFrame()
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-# ----------------- OB/FVG Detection -----------------
-def detect_order_blocks(df):
-    df['OB_type'] = None
-    df['OB_top'] = np.nan
-    df['OB_bottom'] = np.nan
-    for i in range(2, len(df)):
-        # Simple bullish OB heuristic
-        if df['Close'].iloc[i] > df['Close'].iloc[i-1] and df['Open'].iloc[i-1] > df['Close'].iloc[i-1]:
-            df.at[i, 'OB_type'] = 'Bullish'
-            df.at[i, 'OB_top'] = df['High'].iloc[i-1]
-            df.at[i, 'OB_bottom'] = df['Low'].iloc[i-1]
-        # Simple bearish OB heuristic
-        elif df['Close'].iloc[i] < df['Close'].iloc[i-1] and df['Open'].iloc[i-1] < df['Close'].iloc[i-1]:
-            df.at[i, 'OB_type'] = 'Bearish'
-            df.at[i, 'OB_top'] = df['High'].iloc[i-1]
-            df.at[i, 'OB_bottom'] = df['Low'].iloc[i-1]
+# Simple helper to convert dataframe index to timezone-naive datetime
+def to_localized_index(df):
+    if isinstance(df.index, pd.DatetimeIndex):
+        df.index = df.index.tz_localize(None) if df.index.tzinfo is not None else df.index
     return df
 
-# ----------------- Pattern Detection -----------------
-def detect_patterns(df):
-    patterns = []
-    # Dummy placeholders: implement actual detection algorithms here
-    # For demonstration, mark a rising wedge if last 3 candles close higher than open
-    for i in range(3, len(df)):
-        if all(df['Close'].iloc[i-3:i] > df['Open'].iloc[i-3:i]):
-            patterns.append((i, "Rising Wedge"))
-        elif all(df['Close'].iloc[i-3:i] < df['Open'].iloc[i-3:i]):
-            patterns.append((i, "Falling Wedge"))
-    return df, patterns
+# ---------------------------
+# Sidebar - controls
+with st.sidebar:
+    st.header("BrayFXTrade Analyzer Settings")
+    mode = st.selectbox("Mode", ["Backtest", "Live Analysis"])
+    pair = st.selectbox("Select Forex Pair", ALL_PAIRS, index=2)
+    timeframe = st.selectbox("Timeframe", ["1H","4H","1D","15m","5m"], index=0)
+    today = datetime.today()
+    start_date = st.date_input("Start Date", value=today - timedelta(days=365*2))
+    end_date = st.date_input("End Date", value=today)
+    st.markdown("---")
+    st.subheader("Strategies")
+    use_ob = st.checkbox("Order Blocks (OB)", value=True)
+    use_fvg = st.checkbox("Fair Value Gaps (FVG)", value=True)
+    use_patterns = st.checkbox("Chart Patterns (Engulfing)", value=True)
+    st.markdown("---")
+    st.subheader("Run / Live Options")
+    auto_refresh = st.checkbox("Auto-refresh (Live only)", value=False)
+    refresh_interval = st.number_input("Refresh interval (s)", min_value=10, value=60, step=10)
+    st.markdown("---")
+    export_csv = st.checkbox("Show Export Buttons", value=True)
+    st.markdown("Built by BrayFXTrade Analyzer — demo heuristics for OB/FVG and chart patterns.")
 
-# ----------------- Signal Generation / Backtest -----------------
-def generate_signals(df):
-    signals = []
-    for i in range(len(df)):
-        if df['OB_type'].iloc[i] == 'Bullish':
-            entry = df['OB_bottom'].iloc[i]
-            sl = entry - (df['OB_top'].iloc[i] - df['OB_bottom'].iloc[i])*0.02
-            tp = entry + (df['OB_top'].iloc[i] - df['OB_bottom'].iloc[i])*3
-            signals.append({'Datetime':df['Datetime'].iloc[i],'Type':'Buy','Entry':entry,'SL':sl,'TP':tp})
-        elif df['OB_type'].iloc[i] == 'Bearish':
-            entry = df['OB_top'].iloc[i]
-            sl = entry + (df['OB_top'].iloc[i] - df['OB_bottom'].iloc[i])*0.02
-            tp = entry - (df['OB_top'].iloc[i] - df['OB_bottom'].iloc[i])*3
-            signals.append({'Datetime':df['Datetime'].iloc[i],'Type':'Sell','Entry':entry,'SL':sl,'TP':tp})
-    return pd.DataFrame(signals)
+# ---------------------------
+# Top-row: TradingView widget + quick stats
+col1, col2 = st.columns([2,1])
 
-# ----------------- Main Chart -----------------
-st.title("💹 BrayFXTrade Analyzer")
+with col1:
+    st.subheader("TradingView Widget (interactive)")
+    # TradingView widget embed (online)
+    tv_html = f"""
+    <!-- TradingView Widget BEGIN -->
+    <div id="tradingview_abc" style="height:520px;"></div>
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <script type="text/javascript">
+    new TradingView.widget(
+    {{
+      "width": "100%",
+      "height": 520,
+      "symbol": "{pair.replace('=','') if '=' in pair else pair}",
+      "interval": "{timeframe}",
+      "timezone": "Etc/UTC",
+      "theme": "dark",
+      "style": "1",
+      "locale": "en",
+      "toolbar_bg": "#f1f3f6",
+      "enable_publishing": false,
+      "allow_symbol_change": true,
+      "container_id": "tradingview_abc"
+    }}
+    );
+    </script>
+    <!-- TradingView Widget END -->
+    """
+    components.html(tv_html, height=540)
 
-combined_fig = go.Figure()
-colors = ["cyan","magenta","orange","lime","blue","pink","yellow"]
+with col2:
+    st.subheader("Quick Stats")
+    st.write(f"Mode: **{mode}**")
+    st.write(f"Pair: **{pair}**")
+    st.write(f"Timeframe: **{timeframe}**")
+    st.write(f"Range: **{start_date.isoformat()}** → **{end_date.isoformat()}**")
+    st.write("Strategies enabled:")
+    st.write(f"- OB: {'✅' if use_ob else '❌'}  ")
+    st.write(f"- FVG: {'✅' if use_fvg else '❌'}  ")
+    st.write(f"- Patterns: {'✅' if use_patterns else '❌'}  ")
 
-for idx, pair in enumerate(pairs):
-    with st.spinner(f"Fetching and analyzing {pair}..."):
-        df = fetch_data(pair, start_date, end_date, timeframe)
+# ---------------------------
+# Data loader with caching
+@st.cache_data(ttl=60)
+def fetch_data(pair, start, end, yf_interval):
+    """
+    Fetch with yfinance; for multi-hour TF like 4H we fetch 1h and resample.
+    """
+    try:
+        # yfinance uses periods for intraday with small windows; when user supplies long start->end for 15m,
+        # yfinance may fail — but we'll try the basic download and later handle resampling
+        df = yf.download(pair, start=start, end=end + timedelta(days=1), interval=yf_interval, progress=False)
         if df.empty:
-            st.warning(f"No data for {pair}")
-            continue
-        
-        df = detect_order_blocks(df)
-        df, patterns = detect_patterns(df)
-        
-        color = colors[idx % len(colors)]
-        
-        # Candlestick
-        combined_fig.add_trace(go.Candlestick(
-            x=df['Datetime'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-            name=pair, increasing_line_color=color, decreasing_line_color=color, opacity=0.5
-        ))
-        
-        # OB/FVG zones
-        for i in range(len(df)):
-            if not pd.isna(df['OB_top'].iloc[i]):
-                zone_color = 'green' if df['OB_type'].iloc[i]=='Bullish' else 'red'
-                combined_fig.add_shape(type="rect",
-                                       x0=df['Datetime'].iloc[i], x1=df['Datetime'].iloc[i]+pd.Timedelta(minutes=1),
-                                       y0=df['OB_bottom'].iloc[i], y1=df['OB_top'].iloc[i],
-                                       line=dict(color=zone_color), fillcolor=zone_color, opacity=0.2)
-        
-        # Patterns
-        for idx_pat, pat in patterns:
-            combined_fig.add_trace(go.Scatter(
-                x=[df['Datetime'].iloc[idx_pat]], y=[df['High'].iloc[idx_pat]+0.0005],
-                mode="markers+text", marker=dict(size=8,color=color),
-                text=[pat], textposition="top center", name=f"{pair} Pattern"
+            return df
+        df = df.dropna(subset=['Open','High','Low','Close'])
+        df = to_localized_index(df)
+        return df
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return pd.DataFrame()
+
+# Map timeframe to yf interval
+yf_interval = TF_TO_YF_INTERVAL.get(timeframe, "60m")
+raw_df = fetch_data(pair, start_date, end_date, yf_interval)
+
+# Handle 4H resample if requested
+if not raw_df.empty and timeframe == "4H":
+    # ensure datetime index
+    df = raw_df.resample('4H').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+else:
+    df = raw_df.copy()
+
+# Basic no-data handling
+if df.empty:
+    st.error(f"No data for {pair} — try a different timeframe or shorter date range.")
+    st.stop()
+
+# Keep df in session_state so Run Analysis can reuse
+st.session_state['market_df'] = df
+
+# ---------------------------
+# Analysis functions (heuristics)
+def detect_ob(data):
+    rows = []
+    # Order block heuristic: large bullish/bearish candle followed by smaller retracement.
+    for i in range(1, len(data)-1):
+        prev, cur, nxt = data.iloc[i-1], data.iloc[i], data.iloc[i+1]
+        body_cur = abs(cur.Close - cur.Open)
+        body_prev = abs(prev.Close - prev.Open)
+        body_next = abs(nxt.Close - nxt.Open)
+        # Bearish OB: large bearish candle then smaller corrective move
+        if cur.Close < cur.Open and body_cur > body_prev * 1.0 and body_cur > body_next * 0.8:
+            rows.append({"Index": i, "Type":"Bearish OB", "Price": cur.Close,
+                         "Top": cur.High, "Bottom": cur.Low, "Strategy":"OB"})
+        # Bullish OB
+        if cur.Close > cur.Open and body_cur > body_prev * 1.0 and body_cur > body_next * 0.8:
+            rows.append({"Index": i, "Type":"Bullish OB", "Price": cur.Close,
+                         "Top": cur.High, "Bottom": cur.Low, "Strategy":"OB"})
+    return pd.DataFrame(rows)
+
+def detect_fvg(data):
+    rows=[]
+    # FVG heuristic: gap between consecutive candles where there's a price range not overlapped
+    for i in range(1, len(data)-1):
+        cur = data.iloc[i]
+        nxt = data.iloc[i+1]
+        # Bullish FVG: current high < next low (gap up on close->open)
+        if cur.High < nxt.Low:
+            rows.append({"Index":i, "Type":"Bullish FVG", "Price": (cur.High+nxt.Low)/2,
+                         "Top": nxt.Low, "Bottom": cur.High, "Strategy":"FVG"})
+        # Bearish FVG: current low > next high
+        if cur.Low > nxt.High:
+            rows.append({"Index":i, "Type":"Bearish FVG", "Price": (cur.Low+nxt.High)/2,
+                         "Top": cur.Low, "Bottom": nxt.High, "Strategy":"FVG"})
+    return pd.DataFrame(rows)
+
+def detect_patterns(data):
+    rows=[]
+    # Simple engulfing pattern detector
+    for i in range(1, len(data)):
+        prev, cur = data.iloc[i-1], data.iloc[i]
+        # Bullish engulfing
+        if prev.Close < prev.Open and cur.Close > cur.Open and cur.Close > prev.Open and cur.Open < prev.Close:
+            rows.append({"Index": i, "Type":"Bullish Engulfing", "Price": cur.Close, "Top":cur.High, "Bottom":cur.Low, "Strategy":"Pattern"})
+        # Bearish engulfing
+        if prev.Close > prev.Open and cur.Close < cur.Open and cur.Open > prev.Close and cur.Close < prev.Open:
+            rows.append({"Index": i, "Type":"Bearish Engulfing", "Price": cur.Close, "Top":cur.High, "Bottom":cur.Low, "Strategy":"Pattern"})
+    return pd.DataFrame(rows)
+
+# ---------------------------
+# Analysis runner
+def run_analysis(df, use_ob, use_fvg, use_patterns):
+    signals = pd.DataFrame()
+    if use_ob:
+        s = detect_ob(df)
+        if not s.empty:
+            s['StrategyName'] = 'OB Strategy'
+            signals = pd.concat([signals, s], ignore_index=True)
+    if use_fvg:
+        s = detect_fvg(df)
+        if not s.empty:
+            s['StrategyName'] = 'FVG Strategy'
+            signals = pd.concat([signals, s], ignore_index=True)
+    if use_patterns:
+        s = detect_patterns(df)
+        if not s.empty:
+            s['StrategyName'] = 'Pattern Recognition'
+            signals = pd.concat([signals, s], ignore_index=True)
+    if not signals.empty:
+        # normalize Index to int
+        signals['Index'] = signals['Index'].astype(int)
+    return signals
+
+# ---------------------------
+# Trade simulation (entry/SL/TP heuristics)
+def simulate_trades(signals, df):
+    trades = []
+    for _, s in signals.iterrows():
+        idx = int(s['Index'])
+        typ = s['Type']
+        price = s['Price']
+        # Basic risk rules: SL/TP by % of price or use high/low of signal candle
+        if "Bull" in typ:
+            entry = price
+            sl = entry - 0.005 * entry
+            tp = entry + 0.02 * entry
+            direction = "Long"
+        else:
+            entry = price
+            sl = entry + 0.005 * entry
+            tp = entry - 0.02 * entry
+            direction = "Short"
+        # Evaluate result by scanning next N bars (here 20) to see if hit TP/SL
+        hit = None
+        for j in range(idx+1, min(idx+1+20, len(df))):
+            high = df.iloc[j].High
+            low = df.iloc[j].Low
+            if direction == "Long":
+                if low <= sl:
+                    hit = "SL"
+                    break
+                if high >= tp:
+                    hit = "TP"
+                    break
+            else:
+                if high >= sl:
+                    hit = "SL"
+                    break
+                if low <= tp:
+                    hit = "TP"
+                    break
+        if hit == "TP":
+            profit = abs(tp - entry)
+            win = 1
+        elif hit == "SL":
+            profit = -abs(entry - sl)
+            win = 0
+        else:
+            # neither hit within window: mark as open/neutral (we'll use last close to compute P/L)
+            last_close = df.iloc[min(idx+20, len(df)-1)].Close
+            profit = (last_close - entry) if direction == "Long" else (entry - last_close)
+            win = 1 if profit > 0 else 0
+        trades.append({
+            "Idx": idx, "Type": typ, "StrategyName": s.get("StrategyName", s.get("Strategy","")), 
+            "Entry": entry, "SL": sl, "TP": tp, "Profit": profit, "Win": win
+        })
+    trades_df = pd.DataFrame(trades)
+    if not trades_df.empty:
+        trades_df['CumulativeProfit'] = trades_df['Profit'].cumsum()
+    return trades_df
+
+# ---------------------------
+# Session controls & Run Analysis button
+st.markdown("---")
+run_col1, run_col2, run_col3 = st.columns([1,1,2])
+
+with run_col1:
+    run_now = st.button("▶️ Run Analysis")
+
+with run_col2:
+    st.write("")  # spacer
+    clear_state = st.button("🧹 Clear Results")
+
+with run_col3:
+    # allow manual download after results
+    pass
+
+if clear_state:
+    for k in ['signals_df','trades_df','summary_df']:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.experimental_rerun()
+
+# Auto-refresh logic for live mode (only when auto_refresh is true)
+if mode == "Live Analysis" and auto_refresh:
+    # use st.experimental_get_query_params hack to trigger rerun every refresh_interval seconds
+    st.experimental_rerun()
+
+# Run analysis when user clicks
+if run_now:
+    df = st.session_state['market_df']
+    signals_df = run_analysis(df, use_ob, use_fvg, use_patterns)
+    st.session_state['signals_df'] = signals_df
+    trades_df = simulate_trades(signals_df, df) if not signals_df.empty else pd.DataFrame()
+    st.session_state['trades_df'] = trades_df
+
+# If we have results in session_state, show them
+signals_df = st.session_state.get('signals_df', pd.DataFrame())
+trades_df = st.session_state.get('trades_df', pd.DataFrame())
+
+# ---------------------------
+# Left: Analysis outputs, Right: Charts
+left, right = st.columns([1.1,1.9])
+
+with left:
+    st.subheader("Signals")
+    if signals_df.empty:
+        st.info("No signals detected yet. Click **Run Analysis** to scan the chosen range.")
+    else:
+        # show top signals with types and link to index/time
+        display = signals_df.copy()
+        display['Time'] = display['Index'].apply(lambda i: df.index[int(i)].strftime("%Y-%m-%d %H:%M"))
+        display = display[['Time','Type','StrategyName','Price']]
+        st.dataframe(display.sort_values(by='Time', ascending=False).reset_index(drop=True), height=300)
+
+    st.markdown("### Performance Summary")
+    if trades_df.empty:
+        st.info("No trades simulated yet.")
+    else:
+        summary = trades_df.groupby('StrategyName').agg(
+            Total_Trades=('Win','count'),
+            Total_Profit=('Profit','sum'),
+            Win_Rate=('Win','mean'),
+            Avg_Profit=('Profit','mean')
+        ).reset_index()
+        summary['Win_Rate'] = (summary['Win_Rate']*100).round(2)
+        summary['Total_Profit'] = summary['Total_Profit'].round(6)
+        st.table(summary)
+
+    # Alerts (latest signals)
+    st.markdown("### Alerts")
+    if signals_df.empty:
+        st.write("—")
+    else:
+        latest = signals_df.tail(5).iloc[::-1]
+        for _, s in latest.iterrows():
+            if "Bull" in s['Type']:
+                st.success(f"🚀 {s['Type']} ({s.get('StrategyName','')}) @ {s['Price']:.5f}")
+            elif "Bear" in s['Type']:
+                st.warning(f"⚠️ {s['Type']} ({s.get('StrategyName','')}) @ {s['Price']:.5f}")
+            else:
+                st.info(f"ℹ️ {s['Type']} ({s.get('StrategyName','')}) @ {s['Price']:.5f}")
+
+    # Export buttons
+    if export_csv:
+        if not signals_df.empty:
+            csv = signals_df.to_csv(index=False).encode('utf-8')
+            st.download_button("⬇️ Download Signals CSV", csv, file_name=f"{pair}_signals.csv", mime="text/csv")
+        if not trades_df.empty:
+            csv2 = trades_df.to_csv(index=False).encode('utf-8')
+            st.download_button("⬇️ Download Trades CSV", csv2, file_name=f"{pair}_trades.csv", mime="text/csv")
+
+with right:
+    st.subheader("Programmatic Chart (candles + signals + OB/FVG zones)")
+
+    # Build Plotly candlestick
+    fig = go.Figure(data=[go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        increasing_line_color='green', decreasing_line_color='red',
+        name='Price'
+    )])
+
+    # Add OB & FVG rectangles and markers if present
+    if not signals_df.empty:
+        # draw zones
+        for _, s in signals_df.iterrows():
+            idx = int(s['Index'])
+            # safe index check
+            if idx < 0 or idx >= len(df):
+                continue
+            t0 = df.index[idx]
+            # show rectangles for OB/FVG using Top/Bottom fields
+            top = s.get('Top', None)
+            bottom = s.get('Bottom', None)
+            typ = s['Type']
+            color = 'rgba(0,255,0,0.15)' if 'Bull' in typ else 'rgba(255,0,0,0.12)'
+            if top is not None and bottom is not None:
+                fig.add_shape(
+                    type="rect",
+                    x0=t0 - pd.Timedelta(minutes=1),
+                    x1=t0 + pd.Timedelta(hours=12),
+                    y0=bottom, y1=top,
+                    fillcolor=color,
+                    line=dict(width=0),
+                    layer="below"
+                )
+            # add marker
+            fig.add_trace(go.Scatter(
+                x=[df.index[idx]],
+                y=[s['Price']],
+                mode="markers+text",
+                marker=dict(color='green' if 'Bull' in typ else 'red', size=10),
+                text=[s['Type']],
+                textposition="top center",
+                name=f"{s['Type']}"
             ))
-        
-        # Signals / Backtest
-        if mode == "Backtest":
-            df_signals = generate_signals(df)
-            for _, row in df_signals.iterrows():
-                # Entry
-                combined_fig.add_trace(go.Scatter(
-                    x=[row['Datetime']], y=[row['Entry']],
-                    mode="markers", marker=dict(size=10, symbol='triangle-up' if row['Type']=='Buy' else 'triangle-down', color=color),
-                    name=f"{pair} Entry"
-                ))
-                # SL
-                combined_fig.add_trace(go.Scatter(
-                    x=[row['Datetime']], y=[row['SL']],
-                    mode="markers", marker=dict(size=8, symbol='x', color='red'),
-                    name=f"{pair} SL"
-                ))
-                # TP
-                combined_fig.add_trace(go.Scatter(
-                    x=[row['Datetime']], y=[row['TP']],
-                    mode="markers", marker=dict(size=8, symbol='circle', color='lime'),
-                    name=f"{pair} TP"
-                ))
 
-combined_fig.update_layout(template="plotly_dark",
-                           title="Multi-Pair Candlestick Chart with OB/FVG, Patterns & Backtest Signals",
-                           xaxis_title="Datetime", yaxis_title="Price",
-                           legend=dict(orientation="h", y=-0.2))
-st.plotly_chart(combined_fig, use_container_width=True)
+    # Add trades equity line if exists
+    if not trades_df.empty:
+        # show cumulative profit on secondary y-axis
+        fig.add_trace(go.Scatter(
+            x=[df.index[min(int(r['Idx']), len(df)-1)] for _, r in trades_df.iterrows()],
+            y=trades_df['CumulativeProfit'],
+            mode="lines+markers",
+            name="Equity",
+            yaxis="y2"
+        ))
+        # add yaxis2
+        fig.update_layout(
+            yaxis2=dict(overlaying="y", side="right", title="Cumulative Profit", showgrid=False)
+        )
 
-st.markdown("**Built by BrayFXTrade Analyzer — demo heuristics for OB/FVG and chart patterns.**")
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=700,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
 
+    st.plotly_chart(fig, use_container_width=True)
+
+# ---------------------------
+# Bottom: Extra analytics
+st.markdown("---")
+st.subheader("Extra Tools & Notes")
+
+col_a, col_b, col_c = st.columns([1,1,1])
+with col_a:
+    st.markdown("**Multi-timeframe idea**")
+    st.write("Embed smaller TF charts in TradingView widget by changing timeframe at top.")
+
+with col_b:
+    st.markdown("**Need official TradingView Charting Library?**")
+    st.write("Contact TradingView for Charting Library access (paid license) for programmatic drawing in that chart.")
+
+with col_c:
+    st.markdown("**Support / Next steps**")
+    st.write("- Add Telegram/email alerts  \n- Add position sizing & risk manager  \n- Add more pattern detectors")
+
+st.caption("BrayFXTrade Analyzer — demo heuristics. Use for research/backtesting only; not trading advice.")

@@ -463,7 +463,3 @@ st.markdown("---")
 st.markdown("Built by BrayFXTrade Analyzer — demo heuristics for OB/FVG and simple pattern detection.")
 
 # End of file
-
-!pip install streamlit yfinance plotly
-
-!streamlit run app.py

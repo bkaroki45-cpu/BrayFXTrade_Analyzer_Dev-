@@ -30,18 +30,19 @@ def fetch_data(ticker: str, start: str, end: str, interval: str = '1h') -> pd.Da
     return data
 
 def detect_order_blocks(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
+    """
+    Detect bullish/bearish order blocks safely.
+    Returns empty DataFrame if required columns are missing.
+    """
     df = df.copy()
-    
-    # Ensure required columns exist
     required_cols = ['Open', 'High', 'Low', 'Close']
-    for col in required_cols:
-        if col not in df.columns:
-            st.warning(f"Column '{col}' is missing from data. Skipping order block detection.")
-            df['OB_type'] = None
-            df['OB_level'] = np.nan
-            return df
+    existing_cols = [col for col in required_cols if col in df.columns]
 
-    df = df.dropna(subset=required_cols)
+    if not existing_cols:
+        return pd.DataFrame()  # nothing to process
+
+    df = df.dropna(subset=existing_cols)
+
     df['OB_type'] = None
     df['OB_level'] = np.nan
 
@@ -70,13 +71,19 @@ def detect_order_blocks(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
 
     return df
 
+
 def detect_fvg(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect basic Fair Value Gaps (FVG) safely."""
+    """
+    Detect basic Fair Value Gaps (FVG) safely.
+    """
     df = df.copy()
-    for col in ['Open', 'High', 'Low', 'Close']:
-        if col not in df.columns:
-            df[col] = np.nan
-    df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+    required_cols = ['Open', 'High', 'Low', 'Close']
+    existing_cols = [col for col in required_cols if col in df.columns]
+
+    if not existing_cols:
+        return pd.DataFrame()  # nothing to process
+
+    df = df.dropna(subset=existing_cols)
 
     df['FVG'] = None
     df['FVG_top'] = np.nan
@@ -88,63 +95,72 @@ def detect_fvg(df: pd.DataFrame) -> pd.DataFrame:
         c3 = df.iloc[i]
 
         # bullish gap
-        if c1['High'] < c3['Low']:
+        if float(c1['High']) < float(c3['Low']):
             df.at[df.index[i], 'FVG'] = 'bull'
-            df.at[df.index[i], 'FVG_top'] = c3['Low']
-            df.at[df.index[i], 'FVG_bottom'] = c1['High']
+            df.at[df.index[i], 'FVG_top'] = float(c3['Low'])
+            df.at[df.index[i], 'FVG_bottom'] = float(c1['High'])
         # bearish gap
-        elif c1['Low'] > c3['High']:
+        elif float(c1['Low']) > float(c3['High']):
             df.at[df.index[i], 'FVG'] = 'bear'
-            df.at[df.index[i], 'FVG_top'] = c1['Low']
-            df.at[df.index[i], 'FVG_bottom'] = c3['High']
+            df.at[df.index[i], 'FVG_top'] = float(c1['Low'])
+            df.at[df.index[i], 'FVG_bottom'] = float(c3['High'])
+
     return df
 
+
 def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect simple chart patterns safely."""
+    """
+    Detect simple chart patterns safely: double top / double bottom.
+    """
     df = df.copy()
-    for col in ['High', 'Low']:
-        if col not in df.columns:
-            df[col] = np.nan
-    df = df.dropna(subset=['High', 'Low'])
+    required_cols = ['High', 'Low']
+    existing_cols = [col for col in required_cols if col in df.columns]
+
+    if not existing_cols:
+        return pd.DataFrame()  # nothing to process
+
+    df = df.dropna(subset=existing_cols)
 
     df['pattern'] = None
     df['pattern_level'] = np.nan
 
-    highs = df['High']
-    lows = df['Low']
+    highs = df['High'] if 'High' in df.columns else pd.Series()
+    lows = df['Low'] if 'Low' in df.columns else pd.Series()
     window = 10
 
-    local_max = (highs == highs.rolling(window, center=True, min_periods=1).max())
-    local_min = (lows == lows.rolling(window, center=True, min_periods=1).min())
+    if not highs.empty and not lows.empty:
+        local_max = (highs == highs.rolling(window, center=True, min_periods=1).max())
+        local_min = (lows == lows.rolling(window, center=True, min_periods=1).min())
 
-    peaks = df[local_max].index
-    troughs = df[local_min].index
+        peaks = df[local_max].index
+        troughs = df[local_min].index
 
-    # Double top
-    for i in range(len(peaks)-1):
-        p1 = peaks[i]
-        p2 = peaks[i+1]
-        between = troughs[(troughs > p1) & (troughs < p2)]
-        if len(between) >= 1:
-            level1 = df.at[p1, 'High']
-            level2 = df.at[p2, 'High']
-            if abs(level1 - level2) / max(level1, level2) < 0.01:
-                df.at[p2, 'pattern'] = 'double_top'
-                df.at[p2, 'pattern_level'] = (level1 + level2) / 2
+        # Double top
+        for i in range(len(peaks)-1):
+            p1 = peaks[i]
+            p2 = peaks[i+1]
+            between = troughs[(troughs > p1) & (troughs < p2)]
+            if len(between) >= 1:
+                level1 = df.at[p1, 'High']
+                level2 = df.at[p2, 'High']
+                if abs(level1 - level2) / max(level1, level2) < 0.01:
+                    df.at[p2, 'pattern'] = 'double_top'
+                    df.at[p2, 'pattern_level'] = (level1 + level2) / 2
 
-    # Double bottom
-    for i in range(len(troughs)-1):
-        t1 = troughs[i]
-        t2 = troughs[i+1]
-        between = peaks[(peaks > t1) & (peaks < t2)]
-        if len(between) >= 1:
-            level1 = df.at[t1, 'Low']
-            level2 = df.at[t2, 'Low']
-            if abs(level1 - level2) / max(level1, level2) < 0.01:
-                df.at[t2, 'pattern'] = 'double_bottom'
-                df.at[t2, 'pattern_level'] = (level1 + level2) / 2
+        # Double bottom
+        for i in range(len(troughs)-1):
+            t1 = troughs[i]
+            t2 = troughs[i+1]
+            between = peaks[(peaks > t1) & (peaks < t2)]
+            if len(between) >= 1:
+                level1 = df.at[t1, 'Low']
+                level2 = df.at[t2, 'Low']
+                if abs(level1 - level2) / max(level1, level2) < 0.01:
+                    df.at[t2, 'pattern'] = 'double_bottom'
+                    df.at[t2, 'pattern_level'] = (level1 + level2) / 2
 
     return df
+
 
 # ---------------------- Streamlit UI ----------------------
 st.title("BrayFXTrade Analyzer")

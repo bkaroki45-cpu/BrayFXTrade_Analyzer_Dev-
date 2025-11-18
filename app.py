@@ -1,4 +1,4 @@
-# BrayFXTrade Analyzer - Streamlit App (Safe Version with Placeholder Signals)
+# BrayFXTrade Analyzer - Streamlit App (Safe Signals Table Version)
 
 import streamlit as st
 import yfinance as yf
@@ -25,7 +25,7 @@ def fetch_data(ticker: str, start: str, end: str, interval: str = '1d') -> pd.Da
     data = data.sort_index()
     return data
 
-# Placeholder analysis functions (with dummy signal/outcome columns)
+# Placeholder analysis functions with dummy signal/outcome columns
 
 def detect_order_blocks(df, lookback=20): return df.copy()
 def detect_fvg(df): return df.copy()
@@ -35,15 +35,13 @@ def generate_signals(df, strategy='OB+FVG'):
     df = df.copy()
     if 'signal' not in df.columns:
         df['signal'] = np.nan
-    # Example dummy signals for demo
-    df.loc[df.index[::5], 'signal'] = 'buy'
+    df.loc[df.index[::5], 'signal'] = 'buy'  # dummy signals
     return df
 
 def backtest_signals(df, look_forward=24):
     df = df.copy()
     if 'outcome' not in df.columns:
         df['outcome'] = np.nan
-    # Example dummy backtest outcomes
     df.loc[df.index[::10], 'outcome'] = 'win'
     df.loc[df.index[1::10], 'outcome'] = 'loss'
     return df
@@ -107,11 +105,18 @@ if run_button:
         col3.metric("Losses", int(losses))
         col4.metric("Win Rate", f"{win_rate:.2f}%" if not np.isnan(win_rate) else "N/A")
 
-        # ---------------------- Signals Table ----------------------
+        # ---------------------- Signals Table (Safe) ----------------------
         st.subheader("Signals Table")
         display_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'OB_type', 'FVG', 'pattern', 'signal', 'entry', 'sl', 'tp', 'outcome', 'profit']
         df_display = df_bt.reset_index()
-        st.dataframe(df_display[['index'] + [c for c in display_cols if c in df_display.columns]].rename(columns={'index':'Datetime'}).sort_values('Datetime', ascending=False))
+        try:
+            cols_to_show = ['index'] + [c for c in display_cols if c in df_display.columns]
+            df_display = df_display[cols_to_show].rename(columns={'index':'Datetime'}).sort_values('Datetime', ascending=False)
+        except KeyError:
+            st.warning("Some columns are missing in the signals table. Showing available columns.")
+            df_display = df_display.sort_values(df_display.columns[0], ascending=False)
+
+        st.dataframe(df_display)
 
         # ---------------------- Chart ----------------------
         st.subheader("Chart & Signals")
@@ -126,4 +131,3 @@ else:
 
 st.markdown("---")
 st.markdown("Built by BrayFXTrade Analyzer — demo heuristics for OB/FVG and simple pattern detection.")
-# End of file

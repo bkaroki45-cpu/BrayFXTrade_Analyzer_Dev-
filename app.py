@@ -1,177 +1,182 @@
-# app.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timezone
 import plotly.graph_objects as go
+from datetime import datetime
 
-# ---------------------- Page Config ----------------------
-st.set_page_config(page_title="BrayFXTrade Analyzer", layout="wide", page_icon="📊")
+st.set_page_config(page_title="BrayFXTrade Analyzer", layout="wide", page_icon="💹", initial_sidebar_state="expanded")
 
-# ---------------------- Sidebar Navigation ----------------------
+# --- Sidebar ---
 st.sidebar.title("BrayFXTrade Analyzer")
-page = st.sidebar.radio("Go to", ["Dashboard", "Signals Table", "Charts & Patterns"])
+ticker = st.sidebar.text_input("Ticker (Forex pair, e.g., EURUSD=X)", value="EURUSD=X")
+timeframe = st.sidebar.selectbox("Timeframe", ["1mo","1wk","1d","4h","2h","1h","30m","15m","5m","3m","1m"], index=2)
+start_date = st.sidebar.date_input("Start Date", datetime(2023,1,1))
+end_date = st.sidebar.date_input("End Date", datetime.today())
+mode = st.sidebar.selectbox("Mode", ["Signal Generation", "Backtest"], index=1)
 
-# ---------------------- User Inputs ----------------------
-with st.sidebar.expander("Settings", expanded=True):
-    ticker = st.text_input("Ticker", value="EURUSD=X")
-    timeframe = st.selectbox(
-        "Timeframe",
-        options=["1mo", "1wk", "1d", "4h", "2h", "1h", "30m", "15m", "5m", "3m", "1m"],
-        index=2
-    )
-    start_date = st.date_input("Start Date", value=datetime(2023,1,1))
-    end_date = st.date_input("End Date", value=datetime.now(timezone.utc).date())
-    mode = st.selectbox("Mode", options=["Signal Generation", "Backtest"], index=1)
+st.sidebar.markdown("**Analysis Dashboard**")
 
-# ---------------------- Fetch Data ----------------------
+# --- Fetch Data ---
 @st.cache_data
-def fetch_data(ticker, start_date, end_date, interval):
-    df = yf.download(ticker, start=start_date, end=end_date, interval=interval)
-    if df.empty:
-        st.error("No data found. Check ticker, interval, or date range.")
-        return None
-
+def fetch_data(ticker, start, end, interval):
+    df = yf.download(ticker, start=start, end=end, interval=interval)
+    df = df.reset_index()
     required_cols = ['Open','High','Low','Close','Volume']
-    existing_cols = [col for col in required_cols if col in df.columns]
-
-    if len(existing_cols) < 4:  # OHLC minimum
-        st.error(f"Missing essential OHLC columns. Available: {df.columns.tolist()}")
-        return None
-
+    existing_cols = [c for c in required_cols if c in df.columns]
+    if len(existing_cols)<5:
+        st.error("Missing required OHLCV columns in fetched data")
+        return pd.DataFrame()
     df = df.dropna(subset=existing_cols)
-    df.reset_index(inplace=True)
+    df.rename(columns={"Date":"Datetime"}, inplace=True)
     return df
 
 df = fetch_data(ticker, start_date, end_date, timeframe)
-if df is None:
+if df.empty:
     st.stop()
 st.success(f"Data fetched successfully with {len(df)} rows.")
 
-# ---------------------- OB/FVG Detection ----------------------
-def detect_order_blocks(df, lookback=20):
-    df = df.copy()
+# --- OB/FVG Detection ---
+def detect_order_blocks(df):
     df['OB_type'] = None
     df['OB_top'] = np.nan
     df['OB_bottom'] = np.nan
-    for i in range(lookback, len(df)):
-        recent = df.iloc[i-lookback:i]
-        recent_close = recent['Close'].dropna()
-        if recent_close.empty: continue
-        recent_max = recent_close.max()
-        recent_min = recent_close.min()
-        current_close = df['Close'].iloc[i]
-        if current_close > recent_max:
-            df.loc[df.index[i], 'OB_type'] = 'bullish'
-            df.loc[df.index[i], 'OB_top'] = df['High'].iloc[i]
-            df.loc[df.index[i], 'OB_bottom'] = df['Low'].iloc[i]
-        elif current_close < recent_min:
-            df.loc[df.index[i], 'OB_type'] = 'bearish'
-            df.loc[df.index[i], 'OB_top'] = df['High'].iloc[i]
-            df.loc[df.index[i], 'OB_bottom'] = df['Low'].iloc[i]
-    return df
-
-def detect_fvg(df):
-    df = df.copy()
     df['FVG_top'] = np.nan
     df['FVG_bottom'] = np.nan
-    for i in range(2, len(df)):
-        if pd.notna(df['OB_type'].iloc[i-2]):
-            if df['OB_type'].iloc[i-2] == 'bullish':
-                if df['Low'].iloc[i] > df['High'].iloc[i-2]:
-                    df.loc[df.index[i], 'FVG_top'] = df['High'].iloc[i-2]
-                    df.loc[df.index[i], 'FVG_bottom'] = df['Low'].iloc[i]
-            elif df['OB_type'].iloc[i-2] == 'bearish':
-                if df['High'].iloc[i] < df['Low'].iloc[i-2]:
-                    df.loc[df.index[i], 'FVG_top'] = df['High'].iloc[i]
-                    df.loc[df.index[i], 'FVG_bottom'] = df['Low'].iloc[i-2]
+
+    for i in range(2,len(df)):
+        # Simplified Bullish OB
+        if df['Close'].iloc[i-2] > df['Open'].iloc[i-2] and df['Close'].iloc[i-1] < df['Open'].iloc[i-1]:
+            df.at[i,'OB_type'] = 'Bullish'
+            df.at[i,'OB_top'] = df['High'].iloc[i-1]
+            df.at[i,'OB_bottom'] = df['Low'].iloc[i-1]
+            # FVG zone after OB
+            df.at[i,'FVG_top'] = df['High'].iloc[i-1]
+            df.at[i,'FVG_bottom'] = df['Low'].iloc[i-1]
+        # Bearish OB
+        elif df['Close'].iloc[i-2] < df['Open'].iloc[i-2] and df['Close'].iloc[i-1] > df['Open'].iloc[i-1]:
+            df.at[i,'OB_type'] = 'Bearish'
+            df.at[i,'OB_top'] = df['High'].iloc[i-1]
+            df.at[i,'OB_bottom'] = df['Low'].iloc[i-1]
+            df.at[i,'FVG_top'] = df['High'].iloc[i-1]
+            df.at[i,'FVG_bottom'] = df['Low'].iloc[i-1]
+
     return df
 
-# ---------------------- Chart Pattern Detection ----------------------
+# --- Pattern Detection ---
 def detect_patterns(df):
-    df = df.copy()
     df['Pattern'] = None
-    for i in range(5, len(df)-5):
-        window = df['Close'].iloc[i-5:i+5]
-        # Simple demo detections
-        if window.max()-window.min() < window.mean()*0.005:
-            df.loc[df.index[i], 'Pattern'] = 'Rectangle'
-        # Extend here for wedges, triangles, double top/bottom
-    return df
+    patterns = []
+    for i in range(3,len(df)-3):
+        highs = df['High'].iloc[i-3:i+1].values
+        lows = df['Low'].iloc[i-3:i+1].values
 
-# ---------------------- Apply Detection ----------------------
+        # Double Top
+        if highs[0]<highs[1]>highs[2] and abs(highs[1]-highs[2])/highs[1]<0.003:
+            df.at[i,'Pattern'] = 'Double Top'
+            patterns.append((i,'Double Top'))
+        # Double Bottom
+        elif lows[0]>lows[1]<lows[2] and abs(lows[1]-lows[2])/lows[1]<0.003:
+            df.at[i,'Pattern'] = 'Double Bottom'
+            patterns.append((i,'Double Bottom'))
+        # Rising Wedge
+        elif all(np.diff(lows[-3:])>0) and all(np.diff(highs[-3:])>0) and (highs[-1]-lows[-3])<0.01:
+            df.at[i,'Pattern'] = 'Rising Wedge'
+            patterns.append((i,'Rising Wedge'))
+        # Falling Wedge
+        elif all(np.diff(lows[-3:])<0) and all(np.diff(highs[-3:])<0) and (highs[-3]-lows[-1])<0.01:
+            df.at[i,'Pattern'] = 'Falling Wedge'
+            patterns.append((i,'Falling Wedge'))
+        # Symmetrical Triangle
+        elif max(highs)-min(lows)<0.01:
+            df.at[i,'Pattern'] = 'Symmetrical Triangle'
+            patterns.append((i,'Symmetrical Triangle'))
+        # Ascending Triangle
+        elif abs(highs[-1]-highs[-2])<0.0003 and all(np.diff(lows[-3:])>0):
+            df.at[i,'Pattern'] = 'Ascending Triangle'
+            patterns.append((i,'Ascending Triangle'))
+        # Descending Triangle
+        elif abs(lows[-1]-lows[-2])<0.0003 and all(np.diff(highs[-3:])<0):
+            df.at[i,'Pattern'] = 'Descending Triangle'
+            patterns.append((i,'Descending Triangle'))
+        # Rectangle
+        elif abs(highs[-1]-highs[-3])<0.0005 and abs(lows[-1]-lows[-3])<0.0005:
+            df.at[i,'Pattern'] = 'Rectangle'
+            patterns.append((i,'Rectangle'))
+    return df, patterns
+
+# --- Run Analysis ---
 df = detect_order_blocks(df)
-df = detect_fvg(df)
-df = detect_patterns(df)
+df, patterns = detect_patterns(df)
 
-# ---------------------- Signal Generation ----------------------
+# --- Generate Signals ---
 df['signal'] = None
-for i in range(len(df)):
-    if df['OB_type'].iloc[i]=='bullish' and pd.notna(df['FVG_bottom'].iloc[i]):
-        df.loc[df.index[i],'signal']='buy'
-    elif df['OB_type'].iloc[i]=='bearish' and pd.notna(df['FVG_top'].iloc[i]):
-        df.loc[df.index[i],'signal']='sell'
+df['entry'] = np.nan
+df['stoploss'] = np.nan
+df['takeprofit'] = np.nan
 
-# ---------------------- Backtest ----------------------
+for i in range(len(df)):
+    if df['OB_type'].iloc[i]=='Bullish':
+        df.at[i,'signal'] = 'Buy'
+        df.at[i,'entry'] = df['FVG_bottom'].iloc[i]
+        df.at[i,'stoploss'] = df['FVG_bottom'].iloc[i] - 0.02*(df['FVG_top'].iloc[i]-df['FVG_bottom'].iloc[i])
+        df.at[i,'takeprofit'] = df['entry'].iloc[i] + 3*(df['entry'].iloc[i]-df['stoploss'].iloc[i])
+    elif df['OB_type'].iloc[i]=='Bearish':
+        df.at[i,'signal'] = 'Sell'
+        df.at[i,'entry'] = df['FVG_top'].iloc[i]
+        df.at[i,'stoploss'] = df['FVG_top'].iloc[i] + 0.02*(df['FVG_top'].iloc[i]-df['FVG_bottom'].iloc[i])
+        df.at[i,'takeprofit'] = df['entry'].iloc[i] - 3*(df['stoploss'].iloc[i]-df['entry'].iloc[i])
+
+# --- Performance Summary ---
 if mode=="Backtest":
     df_bt = df.copy()
-    df_bt['outcome'] = np.nan
-    for i in range(len(df_bt)):
-        signal = df_bt['signal'].iloc[i]
-        if signal=='buy':
-            sl = df_bt['OB_bottom'].iloc[i]*0.98
-            tp = df_bt['OB_top'].iloc[i]+3*(df_bt['OB_top'].iloc[i]-sl)
-            if (df_bt['High'].iloc[i:]>=tp).any(): df_bt.loc[df_bt.index[i],'outcome']='win'
-            elif (df_bt['Low'].iloc[i:]<=sl).any(): df_bt.loc[df_bt.index[i],'outcome']='loss'
-        elif signal=='sell':
-            sl = df_bt['OB_top'].iloc[i]*1.02
-            tp = df_bt['OB_bottom'].iloc[i]-3*(sl-df_bt['OB_bottom'].iloc[i])
-            if (df_bt['Low'].iloc[i:]<=tp).any(): df_bt.loc[df_bt.index[i],'outcome']='win'
-            elif (df_bt['High'].iloc[i:]>=sl).any(): df_bt.loc[df_bt.index[i],'outcome']='loss'
-
     total_signals = df_bt['signal'].notna().sum()
-    wins = (df_bt['outcome']=='win').sum()
-    losses = (df_bt['outcome']=='loss').sum()
-    win_rate = (wins/(wins+losses)*100) if (wins+losses)>0 else np.nan
+    st.write(f"Total Signals: {total_signals}")
+else:
+    df_bt = df[df['signal'].notna()]
 
-    if page=="Dashboard":
-        st.subheader("Performance Summary")
-        st.metric("Total Signals", total_signals)
-        st.metric("Wins", wins)
-        st.metric("Losses", losses)
-        st.metric("Win Rate", f"{win_rate:.2f}%" if not np.isnan(win_rate) else "N/A")
+# --- Plot Candlestick Chart ---
+fig = go.Figure(go.Candlestick(
+    x=df['Datetime'],
+    open=df['Open'],
+    high=df['High'],
+    low=df['Low'],
+    close=df['Close'],
+    name="Candlestick"
+))
 
-# ---------------------- Signals Table Page ----------------------
-if page=="Signals Table":
-    display_cols=['Datetime','signal','OB_type','OB_top','OB_bottom','FVG_top','FVG_bottom','Pattern','outcome']
-    df_display = df.reset_index().rename(columns={'index':'Datetime'})
-    available_cols=[c for c in display_cols if c in df_display.columns]
-    st.dataframe(df_display[available_cols].sort_values('Datetime', ascending=False))
+# Overlay OB/FVG
+for i in range(len(df)):
+    if not pd.isna(df['OB_top'].iloc[i]):
+        color='green' if df['OB_type'].iloc[i]=='Bullish' else 'red'
+        fig.add_shape(type="rect",
+                      x0=df['Datetime'].iloc[i], x1=df['Datetime'].iloc[i],
+                      y0=df['OB_bottom'].iloc[i], y1=df['OB_top'].iloc[i],
+                      line=dict(color=color), fillcolor=color, opacity=0.3)
 
-# ---------------------- Charts & Patterns Page ----------------------
-if page=="Charts & Patterns":
-    st.subheader("Chart & Signals")
-    fig = go.Figure()
-    fig.update_layout(template="plotly_dark", plot_bgcolor='black')
-    fig.add_trace(go.Candlestick(
-        x=df['Date'] if 'Date' in df.columns else df['Datetime'],
-        open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-        name='Price'
+# Overlay Patterns
+for idx, pat in patterns:
+    fig.add_trace(go.Scatter(
+        x=[df['Datetime'].iloc[idx]],
+        y=[df['High'].iloc[idx]+0.0005],
+        mode="markers+text",
+        marker=dict(size=10,color='yellow'),
+        text=[pat],
+        textposition="top center",
+        name="Pattern"
     ))
-    for i,row in df.iterrows():
-        if pd.notna(row['OB_top']):
-            fig.add_shape(type='rect',
-                          x0=row['Datetime'], x1=row['Datetime'],
-                          y0=row['OB_bottom'], y1=row['OB_top'],
-                          line=dict(color='green' if row['OB_type']=='bullish' else 'red'),
-                          opacity=0.3)
-        if pd.notna(row['FVG_top']):
-            fig.add_shape(type='rect',
-                          x0=row['Datetime'], x1=row['Datetime'],
-                          y0=row['FVG_bottom'], y1=row['FVG_top'],
-                          line=dict(color='blue'),
-                          opacity=0.2)
-    st.plotly_chart(fig, use_container_width=True)
 
-st.markdown("**Built by BrayFXTrade Analyzer — demo OB/FVG + chart patterns.**")
+fig.update_layout(
+    template="plotly_dark",
+    title=f"{ticker} Candlestick Chart with OB/FVG & Patterns",
+    xaxis_title="Datetime",
+    yaxis_title="Price"
+)
+
+st.plotly_chart(fig, use_container_width=True)
+st.write("Analysis complete.")
+
+# --- Signals Table ---
+st.subheader("Signals Table")
+display_cols = ['Datetime','signal','entry','stoploss','takeprofit','OB_type','Pattern']
+st.dataframe(df[display_cols].dropna(subset=['signal']), height=400)

@@ -205,9 +205,7 @@ with right:
             y=trades_df['CumulativeProfit'], mode='lines+markers', name='Equity',
             yaxis='y2'
         ))
-        fig.update_layout(yaxis2=dict(overlaying='y', side='right', title='Cumulative Profit', showgrid=False))
-    fig.update_layout(height=720, margin=dict(l=10,r=10,t=30,b=10))
+            fig.update_layout(height=720, margin=dict(l=10,r=10,t=30,b=10))
     st.plotly_chart(fig, use_container_width=True)
 
 st.caption("BrayFXTrade Analyzer — Stable Pro. Demo heuristics only; not financial advice.")
-``
